@@ -128,7 +128,7 @@ class GitHubBackupManager:
                 'backup_time': datetime.now().isoformat(),
                 'backup_time_readable': datetime.now().strftime('%d/%m/%Y à %H:%M:%S'),
                 'backup_size_mb': round(os.path.getsize(backup_db_path) / (1024*1024), 2),
-                'company': 'Desmarais & Gagné Inc.',
+                'company': 'Constructo AI Inc.',
                 'database_stats': stats,
                 'github_repo': self.config['github_repo'],
                 'render_info': {
@@ -212,7 +212,7 @@ class GitHubBackupManager:
     def _create_backup_readme(self, metadata):
         """Crée un README pour le backup"""
         stats = metadata.get('database_stats', {})
-        return f"""# 🏭 ERP Production DG Inc. - Sauvegarde
+        return f"""# 🏭 ERP Production AI - Sauvegarde
 
 ## 📋 Informations Générales
 - **Entreprise:** {metadata['company']}
@@ -250,7 +250,7 @@ Pour restaurer cette sauvegarde :
 3. Redémarrer l'application ERP
 
 ---
-🤖 Sauvegarde automatique générée par le système ERP DG Inc.
+🤖 Sauvegarde automatique générée par le système ERP AI.
 """
     
     def upload_to_github(self, backup_path):
@@ -364,12 +364,12 @@ Pour restaurer cette sauvegarde :
             stats = metadata.get('database_stats', {})
             file_size_mb = round(os.path.getsize(backup_path) / (1024*1024), 2)
             
-            return f"""# 🏭 Sauvegarde Automatique ERP DG Inc.
+            return f"""# 🏭 Sauvegarde Automatique ERP AI
 
 ## 📋 Informations
 - **📅 Date:** {metadata.get('backup_time_readable', 'N/A')}
 - **📁 Taille:** {file_size_mb} MB
-- **🏢 Entreprise:** Desmarais & Gagné Inc.
+- **🏢 Entreprise:** Constructo AI Inc.
 
 ## 📊 Contenu de la Base
 | Module | Enregistrements |
@@ -393,7 +393,7 @@ Pour restaurer cette sauvegarde :
             
         except Exception as e:
             logger.error(f"Erreur création description: {e}")
-            return f"""# 🏭 Sauvegarde ERP DG Inc.
+            return f"""# 🏭 Sauvegarde ERP AI
 
 **Date:** {datetime.now().strftime('%d/%m/%Y à %H:%M:%S')}
 
