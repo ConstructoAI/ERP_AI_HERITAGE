@@ -1,0 +1,92 @@
+# requirements.txt - ERP Production DG Inc.
+# Dépendances Python pour l'application ERP complète
+
+# === DÉPENDANCES PRINCIPALES ===
+streamlit>=1.47.0
+pandas>=1.5.0
+plotly>=5.15.0
+pytz>=2023.3
+
+# === BASE DE DONNÉES ===
+# SQLite est inclus avec Python (pas besoin d'installation)
+
+# === INTERFACE ET VISUALISATION ===
+# Plotly déjà inclus ci-dessus
+
+# === EXPORT PDF BONS DE TRAVAIL ===
+# OBLIGATOIRE pour l'export PDF des Bons de Travail
+reportlab>=4.0.0
+
+# === OPTIONNEL : BACKUP AUTOMATIQUE ===
+# Installez cette dépendance pour activer les sauvegardes automatiques
+schedule>=1.2.0
+
+# === OPTIONNEL : FONCTIONNALITÉS AVANCÉES ===
+# Décommentez selon vos besoins :
+
+# Pour le traitement d'images ET support d'images dans les PDFs (RECOMMANDÉ)
+Pillow>=9.0.0
+
+# Pour les calculs scientifiques avancés (si utilisé)
+# numpy>=1.21.0
+# scipy>=1.9.0
+
+# Pour l'export Excel avancé (si utilisé)
+# openpyxl>=3.0.0
+# xlsxwriter>=3.0.0
+
+# Pour les requêtes HTTP (si utilisé dans certains modules)
+# requests>=2.28.0
+
+# Pour la manipulation de dates avancée (si utilisé)
+# python-dateutil>=2.8.0
+
+# === ASSISTANT IA CLAUDE ===
+# NOUVEAU : Intelligence Artificielle intégrée
+anthropic>=0.3.0
+
+# === ASSISTANT IA EXPERT - MODULES ADDITIONNELS ===
+# Pour le nouveau module assistant_ia_expert.py
+markdown>=3.4.0
+beautifulsoup4>=4.12.0
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+openpyxl>=3.0.0
+
+# === DÉVELOPPEMENT (optionnel) ===
+# pytest>=7.0.0
+# black>=22.0.0
+# flake8>=5.0.0
+
+# === NOTES D'INSTALLATION ===
+# 
+# Installation complète (recommandée) :
+# pip install -r requirements.txt
+#
+# Installation minimale (SANS export PDF ni backup) :
+# pip install streamlit pandas plotly
+#
+# Installation avec export PDF (recommandée pour production) :
+# pip install streamlit pandas plotly reportlab Pillow
+#
+# Pour activer le backup automatique après installation :
+# pip install schedule
+#
+# === NOUVELLES FONCTIONNALITÉS ===
+# 
+# 📄 EXPORT PDF BONS DE TRAVAIL :
+# - ReportLab : Génération de PDFs professionnels
+# - Pillow : Support d'images dans les PDFs (recommandé)
+# - Fonctionnalité disponible dans le module de gestion des Bons de Travail
+#
+# 🤖 ASSISTANT IA CLAUDE :
+# - Intelligence artificielle intégrée pour analyse des données
+# - Recommandations automatiques et insights
+# - Chat conversationnel avec vos données ERP
+# - Analyses prévisionnelles et optimisations
+# - Nécessite une clé API Claude (CLAUDE_API_KEY)
+#
+# === COMPATIBILITÉ ===
+# Python 3.8+ recommandé
+# Testé avec Python 3.9, 3.10, 3.11
+# ReportLab compatible avec toutes les versions supportées

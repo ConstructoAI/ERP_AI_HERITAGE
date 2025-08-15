@@ -1,0 +1,44 @@
+# Requirements optimisés pour Hugging Face Spaces
+# ERP Production Constructo AI Inc.
+
+# Core Streamlit
+streamlit>=1.28.0
+streamlit-option-menu>=0.3.6
+
+# Data processing
+pandas>=1.5.0
+numpy>=1.24.0
+
+# Visualizations
+plotly>=5.15.0
+matplotlib>=3.6.0
+
+# Database (SQLite is built-in Python)
+# sqlite3 # Built-in module
+
+# AI and APIs
+anthropic>=0.5.0
+requests>=2.28.0
+beautifulsoup4>=4.11.0
+
+# Document processing
+Pillow>=9.0.0
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+
+# Date/Time
+pytz>=2023.3
+schedule>=1.2.0
+
+# Utilities
+python-dotenv>=1.0.0
+pathlib
+
+# Image processing (optional)
+opencv-python-headless>=4.8.0
+
+# Optional: Excel support (if needed)
+# openpyxl>=3.1.0
+
+# Development tools (optional)
+# streamlit-autorefresh>=0.0.6

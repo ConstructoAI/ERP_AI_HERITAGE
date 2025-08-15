@@ -1,0 +1,937 @@
+/* style.css - ERP DG INC - PALETTE AMÉLIORÉE */
+
+/* ============================================================================
+   VARIABLES CSS ENRICHIES - PALETTE PROFESSIONNELLE COMPLÈTE
+   ============================================================================ */
+:root {
+    /* === COULEURS PRINCIPALES === */
+    --primary-color: #3B82F6;
+    --primary-color-light: #93C5FD;
+    --primary-color-dark: #2563EB;
+    --primary-color-darker: #1D4ED8;
+    --primary-color-darkest: #1E40AF;
+    
+    /* === COULEURS SECONDAIRES === */
+    --secondary-blue: #3B82F6;
+    --secondary-blue-light: #60A5FA;
+    --secondary-blue-dark: #1D4ED8;
+    
+    --secondary-purple: #8B5CF6;
+    --secondary-purple-light: #A78BFA;
+    --secondary-purple-dark: #7C3AED;
+    
+    --secondary-orange: #F59E0B;
+    --secondary-orange-light: #FCD34D;
+    --secondary-orange-dark: #D97706;
+    
+    /* === COULEURS SÉMANTIQUES === */
+    --success-color: #22C55E;
+    --success-light: #86EFAC;
+    --success-dark: #16A34A;
+    --success-bg: #DCFCE7;
+    
+    --warning-color: #F59E0B;
+    --warning-light: #FCD34D;
+    --warning-dark: #D97706;
+    --warning-bg: #FEF3C7;
+    
+    --error-color: #EF4444;
+    --error-light: #F87171;
+    --error-dark: #DC2626;
+    --error-bg: #FEE2E2;
+    
+    --info-color: #06B6D4;
+    --info-light: #67E8F9;
+    --info-dark: #0891B2;
+    --info-bg: #CFFAFE;
+    
+    /* === COULEURS NEUTRES === */
+    --text-color: #1F2937;
+    --text-color-light: #6B7280;
+    --text-color-lighter: #9CA3AF;
+    --text-color-dark: #111827;
+    
+    --background-color: #FAFBFF;
+    --background-secondary: #F8FAFF;
+    --background-white: #FFFFFF;
+    --background-gray: #F5F8FF;
+    
+    --border-color: #E2E8F0;
+    --border-color-light: #F1F5F9;
+    --border-color-dark: #CBD5E1;
+    
+    /* === DÉGRADÉS THÉMATIQUES === */
+    --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #1F2937 100%);
+    --gradient-primary-light: linear-gradient(135deg, #DBEAFE 0%, #FFFFFF 100%);
+    --gradient-primary-soft: linear-gradient(135deg, #F5F8FF 0%, #DBEAFE 100%);
+    
+    --gradient-blue: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+    --gradient-blue-light: linear-gradient(135deg, #DBEAFE 0%, #FFFFFF 100%);
+    
+    --gradient-purple: linear-gradient(135deg, #8B5CF6 0%, #7C3AED 100%);
+    --gradient-purple-light: linear-gradient(135deg, #F3F4F6 0%, #E5E7EB 100%);
+    
+    --gradient-warm: linear-gradient(135deg, #FEF3C7 0%, #FCD34D 100%);
+    --gradient-cool: linear-gradient(135deg, #E0F2FE 0%, #BAE6FD 100%);
+    
+    --gradient-glass: linear-gradient(135deg, 
+        rgba(255,255,255,0.4) 0%, 
+        rgba(255,255,255,0.1) 50%, 
+        rgba(255,255,255,0.05) 100%);
+    
+    /* === EFFETS LUSTRÉS AVANCÉS === */
+    --lustrous-primary: linear-gradient(145deg, 
+        rgba(255,255,255,0.4) 0%, 
+        var(--primary-color) 20%, 
+        var(--primary-color-dark) 80%, 
+        rgba(0,0,0,0.2) 100%);
+        
+    --lustrous-blue: linear-gradient(145deg, 
+        rgba(255,255,255,0.5) 0%, 
+        var(--secondary-blue) 20%, 
+        var(--secondary-blue-dark) 80%, 
+        rgba(0,0,0,0.2) 100%);
+        
+    --lustrous-success: linear-gradient(145deg, 
+        rgba(255,255,255,0.5) 0%, 
+        var(--success-color) 20%, 
+        var(--success-dark) 80%, 
+        rgba(0,0,0,0.2) 100%);
+        
+    --lustrous-warning: linear-gradient(145deg, 
+        rgba(255,255,255,0.5) 0%, 
+        var(--warning-color) 20%, 
+        var(--warning-dark) 80%, 
+        rgba(0,0,0,0.2) 100%);
+        
+    --lustrous-error: linear-gradient(145deg, 
+        rgba(255,255,255,0.5) 0%, 
+        var(--error-color) 20%, 
+        var(--error-dark) 80%, 
+        rgba(0,0,0,0.2) 100%);
+    
+    /* === PROPRIÉTÉS TECHNIQUES === */
+    --font-family: 'Inter', 'Segoe UI', 'Roboto', sans-serif;
+    --font-family-mono: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    
+    --border-radius-xs: 0.25rem;
+    --border-radius-sm: 0.375rem;
+    --border-radius-md: 0.5rem;
+    --border-radius-lg: 0.75rem;
+    --border-radius-xl: 1rem;
+    
+    --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    
+    --shadow-primary: 0 4px 14px 0 rgba(59, 130, 246, 0.2);
+    --shadow-blue: 0 4px 14px 0 rgba(59, 130, 246, 0.2);
+    --shadow-success: 0 4px 14px 0 rgba(34, 197, 94, 0.2);
+    --shadow-warning: 0 4px 14px 0 rgba(245, 158, 11, 0.2);
+    --shadow-error: 0 4px 14px 0 rgba(239, 68, 68, 0.2);
+    
+    --animation-speed: 0.3s;
+    --animation-speed-fast: 0.15s;
+    --animation-speed-slow: 0.5s;
+    
+    /* === Z-INDEX SCALE === */
+    --z-dropdown: 1000;
+    --z-sticky: 1020;
+    --z-fixed: 1030;
+    --z-modal-backdrop: 1040;
+    --z-modal: 1050;
+    --z-popover: 1060;
+    --z-tooltip: 1070;
+    --z-toast: 1080;
+}
+
+/* ============================================================================
+   COULEURS THÉMATIQUES PAR ZONE
+   ============================================================================ */
+
+/* === ZONES ADMINISTRATIVES (Orange) === */
+.admin-zone, .admin-button, .admin-card {
+    --zone-color: var(--secondary-orange);
+    --zone-color-light: var(--secondary-orange-light);
+    --zone-color-dark: var(--secondary-orange-dark);
+    --zone-gradient: var(--gradient-warm);
+    --zone-shadow: var(--shadow-warning);
+}
+
+/* === ZONES FINANCIÈRES (Bleu) === */
+.finance-zone, .finance-button, .finance-card {
+    --zone-color: var(--secondary-blue);
+    --zone-color-light: var(--secondary-blue-light);
+    --zone-color-dark: var(--secondary-blue-dark);
+    --zone-gradient: var(--gradient-blue-light);
+    --zone-shadow: var(--shadow-blue);
+}
+
+/* === ZONES RH (Violet) === */
+.hr-zone, .hr-button, .hr-card {
+    --zone-color: var(--secondary-purple);
+    --zone-color-light: var(--secondary-purple-light);
+    --zone-color-dark: var(--secondary-purple-dark);
+    --zone-gradient: var(--gradient-purple-light);
+    --zone-shadow: 0 4px 14px 0 rgba(139, 92, 246, 0.2);
+}
+
+/* === ZONES OPÉRATIONNELLES (Vert principal) === */
+.operations-zone, .operations-button, .operations-card {
+    --zone-color: var(--primary-color);
+    --zone-color-light: var(--primary-color-light);
+    --zone-color-dark: var(--primary-color-dark);
+    --zone-gradient: var(--gradient-primary-light);
+    --zone-shadow: var(--shadow-primary);
+}
+
+/* ============================================================================
+   RESET ET STYLES GLOBAUX AMÉLIORÉS
+   ============================================================================ */
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: var(--font-family) !important;
+    color: var(--text-color);
+    background: var(--background-color);
+    margin: 0;
+    padding: 0;
+    line-height: 1.6;
+    font-size: 16px;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-family) !important;
+    font-weight: 700 !important;
+    color: var(--text-color-dark);
+    margin-bottom: 0.8em;
+    line-height: 1.3;
+}
+
+/* Masquer éléments Streamlit */
+#MainMenu, footer, .css-1d391kg {
+    display: none !important;
+}
+
+/* ============================================================================
+   ANIMATIONS AVANCÉES
+   ============================================================================ */
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+@keyframes breathe {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.02); }
+}
+
+@keyframes glow {
+    0%, 100% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+    50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8), 0 0 30px rgba(59, 130, 246, 0.4); }
+}
+
+@keyframes fadeInUp {
+    from { 
+        opacity: 0; 
+        transform: translateY(30px); 
+    }
+    to { 
+        opacity: 1; 
+        transform: translateY(0); 
+    }
+}
+
+@keyframes slideInRight {
+    from { 
+        opacity: 0; 
+        transform: translateX(30px); 
+    }
+    to { 
+        opacity: 1; 
+        transform: translateX(0); 
+    }
+}
+
+/* ============================================================================
+   BOUTONS LUSTRÉS AMÉLIORÉS
+   ============================================================================ */
+
+/* Bouton principal par défaut */
+.stButton > button {
+    background: var(--lustrous-primary) !important;
+    color: white !important;
+    border: none !important;
+    border-radius: var(--border-radius-md) !important;
+    padding: 0.75rem 1.5rem !important;
+    font-weight: 600 !important;
+    font-family: var(--font-family) !important;
+    transition: all var(--animation-speed) ease !important;
+    box-shadow: 
+        var(--shadow-primary),
+        inset 0 1px 0 rgba(255, 255, 255, 0.3),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1) !important;
+    width: 100% !important;
+    text-align: center !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    position: relative !important;
+    overflow: hidden !important;
+    cursor: pointer !important;
+}
+
+/* Effet shimmer pour tous les boutons */
+.stButton > button::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, 
+        transparent 0%, 
+        rgba(255, 255, 255, 0.4) 50%, 
+        transparent 100%);
+    transition: left var(--animation-speed-slow) ease;
+    z-index: 1;
+}
+
+.stButton > button:hover::before {
+    left: 100%;
+}
+
+.stButton > button:hover {
+    background: linear-gradient(145deg, 
+        rgba(255,255,255,0.6) 0%, 
+        var(--primary-color-light) 20%, 
+        var(--primary-color-dark) 80%, 
+        rgba(0,0,0,0.3) 100%) !important;
+    transform: translateY(-3px) !important;
+    box-shadow: 
+        var(--shadow-lg),
+        var(--shadow-primary),
+        inset 0 2px 0 rgba(255, 255, 255, 0.4),
+        inset 0 -2px 0 rgba(0, 0, 0, 0.15) !important;
+}
+
+.stButton > button:active {
+    transform: translateY(-1px) !important;
+    box-shadow: 
+        var(--shadow-sm),
+        inset 0 -1px 0 rgba(255, 255, 255, 0.2),
+        inset 0 1px 2px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* ============================================================================
+   BOUTONS SPÉCIALISÉS PAR ZONE
+   ============================================================================ */
+
+/* Boutons administratifs (Orange) */
+.stButton > button:has(span:contains("Admin")),
+.stButton > button:has(span:contains("Configuration")),
+.stButton > button:has(span:contains("Paramètres")) {
+    background: var(--lustrous-warning) !important;
+    box-shadow: var(--shadow-warning), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+.stButton > button:has(span:contains("Admin")):hover,
+.stButton > button:has(span:contains("Configuration")):hover,
+.stButton > button:has(span:contains("Paramètres")):hover {
+    box-shadow: var(--shadow-lg), var(--shadow-warning) !important;
+}
+
+/* Boutons financiers (Bleu) */
+.stButton > button:has(span:contains("Finance")),
+.stButton > button:has(span:contains("Facture")),
+.stButton > button:has(span:contains("Comptabilité")) {
+    background: var(--lustrous-blue) !important;
+    box-shadow: var(--shadow-blue), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Boutons RH (Violet) */
+.stButton > button:has(span:contains("RH")),
+.stButton > button:has(span:contains("Employé")),
+.stButton > button:has(span:contains("Personnel")) {
+    background: linear-gradient(145deg, 
+        rgba(255,255,255,0.5) 0%, 
+        var(--secondary-purple) 20%, 
+        var(--secondary-purple-dark) 80%, 
+        rgba(0,0,0,0.2) 100%) !important;
+    box-shadow: 0 4px 14px 0 rgba(139, 92, 246, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Boutons de succès (Vert) */
+.stButton > button:has(span:contains("Valider")),
+.stButton > button:has(span:contains("Confirmer")),
+.stButton > button:has(span:contains("Enregistrer")) {
+    background: var(--lustrous-success) !important;
+    box-shadow: var(--shadow-success), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Boutons d'erreur (Rouge) */
+.stButton > button:has(span:contains("Supprimer")),
+.stButton > button:has(span:contains("Annuler")),
+.stButton > button:has(span:contains("Déconnexion")) {
+    background: var(--lustrous-error) !important;
+    box-shadow: var(--shadow-error), inset 0 1px 0 rgba(255, 255, 255, 0.3) !important;
+}
+
+/* ============================================================================
+   CHAT AMÉLIORÉ AVEC COULEURS THÉMATIQUES
+   ============================================================================ */
+
+/* Input de chat lustré */
+div[data-testid="stChatInput"] {
+    background: var(--gradient-glass) !important;
+    backdrop-filter: blur(10px) !important;
+    border-top: 1px solid var(--border-color) !important;
+    padding: 1rem !important;
+    box-shadow: 
+        0 -4px 6px rgba(0, 0, 0, 0.05),
+        inset 0 1px 0 rgba(255, 255, 255, 0.8) !important;
+    border-radius: var(--border-radius-lg) var(--border-radius-lg) 0 0 !important;
+}
+
+div[data-testid="stChatInput"] textarea {
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--border-radius-md) !important;
+    background: var(--background-white) !important;
+    padding: 0.875rem 1rem !important;
+    font-family: var(--font-family) !important;
+    transition: all var(--animation-speed) !important;
+    box-shadow: var(--shadow-sm) !important;
+}
+
+div[data-testid="stChatInput"] textarea:focus {
+    border-color: var(--primary-color) !important;
+    box-shadow: 
+        0 0 0 3px rgba(59, 130, 246, 0.2),
+        var(--shadow-md) !important;
+    transform: translateY(-2px) !important;
+}
+
+/* Bouton d'envoi amélioré */
+div[data-testid="stChatInput"] button {
+    background: var(--lustrous-primary) !important;
+    border: none !important;
+    border-radius: var(--border-radius-md) !important;
+    width: 48px !important;
+    height: 48px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    box-shadow: var(--shadow-primary) !important;
+    transition: all var(--animation-speed) !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+div[data-testid="stChatInput"] button:hover {
+    transform: translateY(-3px) scale(1.05) !important;
+    box-shadow: var(--shadow-lg), var(--shadow-primary) !important;
+}
+
+div[data-testid="stChatInput"] button svg {
+    fill: white !important;
+    width: 20px !important;
+    height: 20px !important;
+    z-index: 2 !important;
+    position: relative !important;
+}
+
+/* Messages de chat thématiques */
+.stChatMessage {
+    border-radius: var(--border-radius-lg) !important;
+    padding: 1.25rem !important;
+    margin-bottom: 1rem !important;
+    border: 1px solid transparent !important;
+    box-shadow: var(--shadow-md) !important;
+    max-width: 85% !important;
+    transition: all var(--animation-speed) !important;
+    animation: fadeInUp var(--animation-speed-slow) ease-out !important;
+}
+
+/* Message utilisateur - Thème bleu */
+div[data-testid="stChatMessage"]:has(div[data-testid^="chatAvatarIcon-user"]) {
+    background: var(--gradient-blue-light) !important;
+    border-left: 4px solid var(--secondary-blue) !important;
+    margin-left: auto !important;
+    margin-right: 0 !important;
+}
+
+/* Message assistant - Thème vert */
+div[data-testid="stChatMessage"]:has(div[data-testid^="chatAvatarIcon-assistant"]) {
+    background: var(--gradient-primary-light) !important;
+    border-left: 4px solid var(--primary-color) !important;
+    margin-left: 0 !important;
+    margin-right: auto !important;
+}
+
+/* Message recherche - Thème succès */
+div[data-testid="stChatMessage"]:has(div[data-testid^="chatAvatarIcon-search"]) {
+    background: var(--success-bg) !important;
+    border-left: 4px solid var(--success-color) !important;
+}
+
+/* ============================================================================
+   FORMULAIRES ET INPUTS AMÉLIORÉS
+   ============================================================================ */
+
+/* Inputs avec focus amélioré */
+input, textarea, select {
+    background: var(--background-white) !important;
+    border: 1px solid var(--border-color) !important;
+    border-radius: var(--border-radius-md) !important;
+    padding: 0.875rem 1rem !important;
+    font-family: var(--font-family) !important;
+    font-size: 0.95rem !important;
+    transition: all var(--animation-speed) !important;
+    box-shadow: var(--shadow-xs) !important;
+}
+
+input:focus, textarea:focus, select:focus {
+    border-color: var(--primary-color) !important;
+    outline: none !important;
+    box-shadow: 
+        0 0 0 3px rgba(59, 130, 246, 0.2),
+        var(--shadow-md) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* Selectbox améliorée */
+.stSelectbox > div {
+    border-radius: var(--border-radius-md) !important;
+    border: 1px solid var(--border-color) !important;
+    background: var(--background-white) !important;
+    box-shadow: var(--shadow-sm) !important;
+    transition: all var(--animation-speed) !important;
+}
+
+.stSelectbox > div:hover {
+    border-color: var(--primary-color) !important;
+    box-shadow: var(--shadow-md) !important;
+    transform: translateY(-1px) !important;
+}
+
+/* ============================================================================
+   CARTES ET CONTENEURS THÉMATIQUES
+   ============================================================================ */
+
+/* Carte d'information générale */
+.info-card {
+    background: var(--gradient-primary-soft) !important;
+    border-radius: var(--border-radius-lg) !important;
+    padding: 1.5rem !important;
+    margin-bottom: 1rem !important;
+    box-shadow: var(--shadow-md) !important;
+    border-left: 4px solid var(--primary-color) !important;
+    transition: all var(--animation-speed) !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+.info-card::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: var(--gradient-primary);
+}
+
+.info-card:hover {
+    transform: translateY(-4px) !important;
+    box-shadow: var(--shadow-xl), var(--shadow-primary) !important;
+}
+
+/* Cartes spécialisées par zone */
+.admin-card {
+    background: var(--gradient-warm) !important;
+    border-left-color: var(--secondary-orange) !important;
+    box-shadow: var(--shadow-md), var(--shadow-warning) !important;
+}
+
+.finance-card {
+    background: var(--gradient-blue-light) !important;
+    border-left-color: var(--secondary-blue) !important;
+    box-shadow: var(--shadow-md), var(--shadow-blue) !important;
+}
+
+.hr-card {
+    background: var(--gradient-purple-light) !important;
+    border-left-color: var(--secondary-purple) !important;
+    box-shadow: var(--shadow-md), 0 4px 14px 0 rgba(139, 92, 246, 0.2) !important;
+}
+
+/* ============================================================================
+   ALERTES AMÉLIORÉES
+   ============================================================================ */
+
+[data-testid="stAlert"] {
+    border-radius: var(--border-radius-md) !important;
+    padding: 1rem 1.25rem !important;
+    margin: 1rem 0 !important;
+    border: none !important;
+    box-shadow: var(--shadow-md) !important;
+    position: relative !important;
+    overflow: hidden !important;
+}
+
+[data-testid="stAlert"]::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 4px;
+    height: 100%;
+}
+
+[data-testid="stAlert"][kind="success"] {
+    background: var(--success-bg) !important;
+    color: var(--success-dark) !important;
+}
+
+[data-testid="stAlert"][kind="success"]::before {
+    background: var(--success-color);
+}
+
+[data-testid="stAlert"][kind="error"] {
+    background: var(--error-bg) !important;
+    color: var(--error-dark) !important;
+}
+
+[data-testid="stAlert"][kind="error"]::before {
+    background: var(--error-color);
+}
+
+[data-testid="stAlert"][kind="warning"] {
+    background: var(--warning-bg) !important;
+    color: var(--warning-dark) !important;
+}
+
+[data-testid="stAlert"][kind="warning"]::before {
+    background: var(--warning-color);
+}
+
+[data-testid="stAlert"][kind="info"] {
+    background: var(--info-bg) !important;
+    color: var(--info-dark) !important;
+}
+
+[data-testid="stAlert"][kind="info"]::before {
+    background: var(--info-color);
+}
+
+/* ============================================================================
+   SIDEBAR AMÉLIORÉE
+   ============================================================================ */
+
+section[data-testid="stSidebar"] {
+    background: var(--background-white) !important;
+    border-right: 1px solid var(--border-color) !important;
+    box-shadow: var(--shadow-lg) !important;
+}
+
+/* Boutons de navigation dans la sidebar */
+section[data-testid="stSidebar"] .stButton > button {
+    background: var(--gradient-primary-soft) !important;
+    color: var(--text-color) !important;
+    border: 1px solid var(--border-color-light) !important;
+    margin-bottom: 0.5rem !important;
+    text-align: left !important;
+    justify-content: flex-start !important;
+    font-weight: 500 !important;
+}
+
+section[data-testid="stSidebar"] .stButton > button:hover {
+    background: var(--gradient-primary-light) !important;
+    border-color: var(--primary-color) !important;
+    color: var(--primary-color-dark) !important;
+    transform: translateX(4px) !important;
+}
+
+/* ============================================================================
+   TABLEAUX AMÉLIORÉS
+   ============================================================================ */
+
+table {
+    background: var(--background-white) !important;
+    border-radius: var(--border-radius-lg) !important;
+    overflow: hidden !important;
+    box-shadow: var(--shadow-lg) !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+}
+
+th {
+    background: var(--gradient-primary-soft) !important;
+    color: var(--text-color-dark) !important;
+    font-weight: 600 !important;
+    padding: 1rem !important;
+    text-align: left !important;
+    border-bottom: 2px solid var(--primary-color) !important;
+}
+
+td {
+    padding: 0.875rem 1rem !important;
+    border-bottom: 1px solid var(--border-color-light) !important;
+    background: var(--background-white) !important;
+    transition: all var(--animation-speed-fast) !important;
+}
+
+tr:hover td {
+    background: var(--gradient-primary-soft) !important;
+    transform: scale(1.01) !important;
+}
+
+tr:nth-child(even) td {
+    background: var(--background-gray) !important;
+}
+
+/* ============================================================================
+   RESPONSIVE DESIGN AMÉLIORÉ
+   ============================================================================ */
+
+@media (max-width: 768px) {
+    :root {
+        --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.03);
+        --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.08);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
+    }
+    
+    .stButton > button {
+        min-height: 48px !important;
+        font-size: 16px !important;
+        padding: 0.875rem 1rem !important;
+    }
+    
+    /* Réduction des effets pour les performances mobiles */
+    .stButton > button::before {
+        display: none !important;
+    }
+    
+    .stButton > button:hover {
+        transform: translateY(-2px) !important;
+    }
+    
+    div[data-testid="stChatInput"] button {
+        width: 52px !important;
+        height: 52px !important;
+    }
+    
+    .info-card:hover {
+        transform: translateY(-2px) !important;
+    }
+}
+
+/* ============================================================================
+   MODE SOMBRE (OPTIONNEL)
+   ============================================================================ */
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --text-color: #E5E7EB;
+        --text-color-light: #9CA3AF;
+        --text-color-dark: #F9FAFB;
+        --background-color: #111827;
+        --background-secondary: #1F2937;
+        --background-white: #374151;
+        --border-color: #4B5563;
+        --border-color-light: #374151;
+        
+        /* Adaptation des gradients pour le mode sombre */
+        --gradient-primary-light: linear-gradient(135deg, #1F2937 0%, #374151 100%);
+        --gradient-primary-soft: linear-gradient(135deg, #374151 0%, #4B5563 100%);
+    }
+}
+
+/* ============================================================================
+   ANIMATIONS D'ENTRÉE POUR L'EXPÉRIENCE UTILISATEUR
+   ============================================================================ */
+
+.fade-in-up {
+    animation: fadeInUp var(--animation-speed-slow) ease-out;
+}
+
+.slide-in-right {
+    animation: slideInRight var(--animation-speed-slow) ease-out;
+}
+
+.breathe {
+    animation: breathe 4s ease-in-out infinite;
+}
+
+.glow {
+    animation: glow 2s ease-in-out infinite;
+}
+
+/* ============================================================================
+   UTILITAIRES DE COULEURS
+   ============================================================================ */
+
+.text-primary { color: var(--primary-color) !important; }
+.text-secondary { color: var(--secondary-blue) !important; }
+.text-success { color: var(--success-color) !important; }
+.text-warning { color: var(--warning-color) !important; }
+.text-error { color: var(--error-color) !important; }
+
+.bg-primary { background-color: var(--primary-color) !important; }
+.bg-secondary { background-color: var(--secondary-blue) !important; }
+.bg-success { background-color: var(--success-color) !important; }
+.bg-warning { background-color: var(--warning-color) !important; }
+.bg-error { background-color: var(--error-color) !important; }
+
+.border-primary { border-color: var(--primary-color) !important; }
+.border-secondary { border-color: var(--secondary-blue) !important; }
+.border-success { border-color: var(--success-color) !important; }
+.border-warning { border-color: var(--warning-color) !important; }
+.border-error { border-color: var(--error-color) !important; }
+
+/* ============================================================================
+   COMPOSANTS SPÉCIAUX ERP
+   ============================================================================ */
+
+/* Dashboard cards */
+.dashboard-card {
+    background: var(--gradient-glass) !important;
+    backdrop-filter: blur(10px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    border-radius: var(--border-radius-xl) !important;
+    padding: 2rem !important;
+    box-shadow: var(--shadow-xl) !important;
+    transition: all var(--animation-speed) !important;
+}
+
+.dashboard-card:hover {
+    transform: translateY(-8px) rotate(1deg) !important;
+    box-shadow: var(--shadow-xl), 0 25px 50px rgba(0, 0, 0, 0.15) !important;
+}
+
+/* Status indicators */
+.status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+    animation: breathe 2s ease-in-out infinite;
+}
+
+.status-active { background-color: var(--success-color); }
+.status-pending { background-color: var(--warning-color); }
+.status-inactive { background-color: var(--error-color); }
+.status-info { background-color: var(--info-color); }
+
+/* Progress bars */
+.progress-bar {
+    background: var(--background-gray);
+    border-radius: var(--border-radius-md);
+    overflow: hidden;
+    height: 8px;
+    position: relative;
+}
+
+.progress-fill {
+    background: var(--gradient-primary);
+    height: 100%;
+    border-radius: var(--border-radius-md);
+    transition: width var(--animation-speed-slow) ease;
+    position: relative;
+    overflow: hidden;
+}
+
+.progress-fill::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, 
+        transparent 0%, 
+        rgba(255, 255, 255, 0.3) 50%, 
+        transparent 100%);
+    animation: shimmer 2s infinite;
+}
+
+/* Badges */
+.badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.25rem 0.75rem;
+    border-radius: var(--border-radius-md);
+    font-size: 0.875rem;
+    font-weight: 500;
+    gap: 0.25rem;
+}
+
+.badge-primary {
+    background: var(--primary-color);
+    color: white;
+}
+
+.badge-secondary {
+    background: var(--secondary-blue);
+    color: white;
+}
+
+.badge-success {
+    background: var(--success-bg);
+    color: var(--success-dark);
+    border: 1px solid var(--success-color);
+}
+
+.badge-warning {
+    background: var(--warning-bg);
+    color: var(--warning-dark);
+    border: 1px solid var(--warning-color);
+}
+
+.badge-error {
+    background: var(--error-bg);
+    color: var(--error-dark);
+    border: 1px solid var(--error-color);
+}
+
+/* ============================================================================
+   ACCESSIBILITÉ AMÉLIORÉE
+   ============================================================================ */
+
+/* Indicateurs de focus améliorés */
+*:focus-visible {
+    outline: 2px solid var(--primary-color) !important;
+    outline-offset: 2px !important;
+    border-radius: var(--border-radius-sm) !important;
+}
+
+/* Contraste amélioré pour les textes */
+.high-contrast {
+    color: var(--text-color-dark) !important;
+    font-weight: 600 !important;
+}
+
+/* Réduction de mouvement pour l'accessibilité */
+@media (prefers-reduced-motion: reduce) {
+    * {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+    }
+}
+
+print("✅ CSS ERP amélioré créé avec succès !");
+print("🎨 Palette de couleurs enrichie et professionnelle");
+print("🌈 Zones thématiques par couleur (Admin=Orange, Finance=Bleu, RH=Violet, Ops=Vert)");
+print("✨ Effets lustrés et animations avancées");
+print("♿ Accessibilité améliorée avec contrastes optimisés");
+print("📱 Responsive design complet");
+print("🌙 Support mode sombre automatique");
+print("⚡ Performance optimisée");

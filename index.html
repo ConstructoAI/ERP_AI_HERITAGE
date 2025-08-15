@@ -1,0 +1,2192 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manuel d'Utilisation - ERP AI</title>
+    <style>
+        :root {
+            /* === COULEURS PRINCIPALES === */
+            --primary-color: #3B82F6;
+            --primary-color-light: #93C5FD;
+            --primary-color-dark: #2563EB;
+            --primary-color-darker: #1D4ED8;
+            --primary-color-darkest: #1E40AF;
+            
+            /* === COULEURS SECONDAIRES === */
+            --secondary-blue: #3B82F6;
+            --secondary-blue-light: #60A5FA;
+            --secondary-blue-dark: #1D4ED8;
+            
+            --secondary-purple: #8B5CF6;
+            --secondary-purple-light: #A78BFA;
+            --secondary-purple-dark: #7C3AED;
+            
+            --secondary-orange: #F59E0B;
+            --secondary-orange-light: #FCD34D;
+            --secondary-orange-dark: #D97706;
+            
+            /* === COULEURS SÉMANTIQUES === */
+            --success-color: #22C55E;
+            --success-light: #86EFAC;
+            --success-dark: #16A34A;
+            --success-bg: #DCFCE7;
+            
+            --warning-color: #F59E0B;
+            --warning-light: #FCD34D;
+            --warning-dark: #D97706;
+            --warning-bg: #FEF3C7;
+            
+            --error-color: #EF4444;
+            --error-light: #F87171;
+            --error-dark: #DC2626;
+            --error-bg: #FEE2E2;
+            
+            --info-color: #06B6D4;
+            --info-light: #67E8F9;
+            --info-dark: #0891B2;
+            --info-bg: #CFFAFE;
+            
+            /* === COULEURS NEUTRES === */
+            --text-color: #1F2937;
+            --text-color-light: #6B7280;
+            --text-color-lighter: #9CA3AF;
+            --text-color-dark: #111827;
+            
+            --background-color: #FAFBFF;
+            --background-secondary: #F8FAFF;
+            --background-white: #FFFFFF;
+            --background-gray: #F5F8FF;
+            
+            --border-color: #E2E8F0;
+            --border-color-light: #F1F5F9;
+            --border-color-dark: #CBD5E1;
+            
+            /* === DÉGRADÉS THÉMATIQUES === */
+            --gradient-primary: linear-gradient(135deg, #3B82F6 0%, #1F2937 100%);
+            --gradient-primary-light: linear-gradient(135deg, #DBEAFE 0%, #FFFFFF 100%);
+            --gradient-primary-soft: linear-gradient(135deg, #F5F8FF 0%, #DBEAFE 100%);
+            
+            --gradient-blue: linear-gradient(135deg, #3B82F6 0%, #1D4ED8 100%);
+            --gradient-blue-light: linear-gradient(135deg, #DBEAFE 0%, #FFFFFF 100%);
+            
+            --gradient-glass: linear-gradient(135deg, 
+                rgba(255,255,255,0.4) 0%, 
+                rgba(255,255,255,0.1) 50%, 
+                rgba(255,255,255,0.05) 100%);
+            
+            /* === EFFETS LUSTRÉS AVANCÉS === */
+            --lustrous-primary: linear-gradient(145deg, 
+                rgba(255,255,255,0.4) 0%, 
+                var(--primary-color) 20%, 
+                var(--primary-color-dark) 80%, 
+                rgba(0,0,0,0.2) 100%);
+                
+            --lustrous-blue: linear-gradient(145deg, 
+                rgba(255,255,255,0.5) 0%, 
+                var(--secondary-blue) 20%, 
+                var(--secondary-blue-dark) 80%, 
+                rgba(0,0,0,0.2) 100%);
+            
+            /* === OMBRES === */
+            --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+            --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+            --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+            
+            --shadow-primary: 0 4px 14px 0 rgba(59, 130, 246, 0.2);
+            --shadow-blue: 0 4px 14px 0 rgba(59, 130, 246, 0.2);
+            
+            /* === PROPRIÉTÉS TECHNIQUES === */
+            --animation-speed: 0.3s;
+            --animation-speed-fast: 0.15s;
+            --animation-speed-slow: 0.5s;
+            
+            --border-radius-xs: 0.25rem;
+            --border-radius-sm: 0.375rem;
+            --border-radius-md: 0.5rem;
+            --border-radius-lg: 0.75rem;
+            --border-radius-xl: 1rem;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        /* === ANIMATIONS AVANCÉES === */
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        @keyframes breathe {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.02); }
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+            50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8), 0 0 30px rgba(59, 130, 246, 0.4); }
+        }
+
+        @keyframes fadeInUp {
+            from { 
+                opacity: 0; 
+                transform: translateY(30px); 
+            }
+            to { 
+                opacity: 1; 
+                transform: translateY(0); 
+            }
+        }
+
+        @keyframes slideInRight {
+            from { 
+                opacity: 0; 
+                transform: translateX(30px); 
+            }
+            to { 
+                opacity: 1; 
+                transform: translateX(0); 
+            }
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background: var(--background-color);
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+
+        /* Layout */
+        .container {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 300px;
+            background-color: var(--card-background);
+            border-right: 1px solid var(--border-color);
+            padding: 2rem;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+        }
+
+        .sidebar h2 {
+            color: var(--primary-color);
+            margin-bottom: 2rem;
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .sidebar h2::before {
+            content: "📘";
+            font-size: 1.8rem;
+        }
+
+        .nav-section {
+            margin-bottom: 2rem;
+        }
+
+        .nav-section h3 {
+            color: var(--secondary-color);
+            font-size: 0.875rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 0.5rem;
+            padding: 0.5rem 0;
+        }
+
+        .nav-link {
+            display: block;
+            padding: 0.75rem 1rem;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 0.5rem;
+            transition: all 0.3s ease;
+            margin-bottom: 0.25rem;
+        }
+
+        .nav-link:hover {
+            background-color: var(--primary-light);
+            background-color: rgba(0, 169, 113, 0.1);
+            color: var(--primary-color);
+            transform: translateX(5px);
+        }
+
+        .nav-link.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        /* Main Content */
+        .main-content {
+            margin-left: 300px;
+            flex: 1;
+            padding: 3rem;
+            max-width: 1200px;
+            margin-right: auto;
+        }
+
+        /* Typography */
+        h1 {
+            color: var(--secondary-color);
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            padding-bottom: 1rem;
+            border-bottom: 3px solid var(--primary-color);
+        }
+
+        h2 {
+            color: var(--secondary-color);
+            font-size: 2rem;
+            margin-top: 3rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        h3 {
+            color: var(--secondary-color);
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        h4 {
+            color: var(--primary-color);
+            font-size: 1.25rem;
+            margin-top: 1.5rem;
+            margin-bottom: 0.75rem;
+        }
+
+        p {
+            margin-bottom: 1rem;
+            line-height: 1.8;
+            color: var(--text-secondary);
+        }
+
+        /* === CARTES AMÉLIORÉES AVEC EFFETS LUSTRÉS === */
+        .card {
+            background: var(--gradient-primary-soft);
+            border-radius: var(--border-radius-lg);
+            padding: 1.5rem;
+            margin-bottom: 1.5rem;
+            box-shadow: var(--shadow-md);
+            border-left: 4px solid var(--primary-color);
+            transition: all var(--animation-speed) ease;
+            position: relative;
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+        }
+
+        .card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: var(--gradient-primary);
+        }
+
+        .card:hover {
+            transform: translateY(-4px);
+            box-shadow: var(--shadow-xl), var(--shadow-primary);
+            background: var(--gradient-glass);
+        }
+
+        /* Feature Grid */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin: 2rem 0;
+        }
+
+        .feature-card {
+            background: var(--gradient-glass);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: var(--border-radius-xl);
+            padding: 2rem;
+            transition: all var(--animation-speed) ease;
+            box-shadow: var(--shadow-xl);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .feature-card::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 4px;
+            background: var(--gradient-blue);
+        }
+
+        .feature-card:hover {
+            transform: translateY(-8px) rotate(1deg);
+            box-shadow: var(--shadow-xl), 0 25px 50px rgba(0, 0, 0, 0.15);
+            border-color: var(--primary-color);
+            background: var(--gradient-blue-light);
+        }
+
+        .feature-card h4 {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+
+        .feature-card .icon {
+            font-size: 1.5rem;
+        }
+
+        /* Lists */
+        ul, ol {
+            margin-left: 2rem;
+            margin-bottom: 1rem;
+        }
+
+        li {
+            margin-bottom: 0.5rem;
+            color: var(--text-secondary);
+        }
+
+        /* Code Blocks */
+        pre {
+            background-color: #1F2937;
+            color: #E5E7EB;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            margin-bottom: 1.5rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        code {
+            background-color: rgba(31, 41, 55, 0.1);
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9rem;
+            color: var(--primary-color);
+        }
+
+        /* Tables */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+            background-color: var(--card-background);
+            border-radius: 0.5rem;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+
+        th {
+            background-color: var(--primary-color);
+            color: white;
+            padding: 1rem;
+            text-align: left;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        tr:hover {
+            background-color: rgba(0, 169, 113, 0.05);
+        }
+
+        /* Alerts */
+        .alert {
+            padding: 1rem 1.5rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: flex-start;
+            gap: 1rem;
+        }
+
+        .alert-info {
+            background-color: rgba(59, 130, 246, 0.1);
+            border-left: 4px solid var(--info-color);
+        }
+
+        .alert-success {
+            background-color: rgba(16, 185, 129, 0.1);
+            border-left: 4px solid var(--success-color);
+        }
+
+        .alert-warning {
+            background-color: rgba(245, 158, 11, 0.1);
+            border-left: 4px solid var(--warning-color);
+        }
+
+        .alert-danger {
+            background-color: rgba(239, 68, 68, 0.1);
+            border-left: 4px solid var(--danger-color);
+        }
+
+        .alert-icon {
+            font-size: 1.5rem;
+            flex-shrink: 0;
+        }
+
+        /* === BOUTONS LUSTRÉS AMÉLIORÉS === */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0.75rem 1.5rem;
+            border-radius: var(--border-radius-md);
+            text-decoration: none;
+            font-weight: 600;
+            font-family: 'Inter', sans-serif;
+            transition: all var(--animation-speed) ease;
+            cursor: pointer;
+            border: none;
+            font-size: 1rem;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 
+                var(--shadow-primary),
+                inset 0 1px 0 rgba(255, 255, 255, 0.3),
+                inset 0 -1px 0 rgba(0, 0, 0, 0.1);
+        }
+
+        /* Effet shimmer pour tous les boutons */
+        .btn::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                rgba(255, 255, 255, 0.4) 50%, 
+                transparent 100%);
+            transition: left var(--animation-speed-slow) ease;
+            z-index: 1;
+        }
+
+        .btn:hover::before {
+            left: 100%;
+        }
+
+        .btn-primary {
+            background: var(--lustrous-primary);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: linear-gradient(145deg, 
+                rgba(255,255,255,0.6) 0%, 
+                var(--primary-color-light) 20%, 
+                var(--primary-color-dark) 80%, 
+                rgba(0,0,0,0.3) 100%);
+            transform: translateY(-3px);
+            box-shadow: 
+                var(--shadow-lg),
+                var(--shadow-primary),
+                inset 0 2px 0 rgba(255, 255, 255, 0.4),
+                inset 0 -2px 0 rgba(0, 0, 0, 0.15);
+        }
+
+        .btn-secondary {
+            background: var(--lustrous-blue);
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: linear-gradient(145deg, 
+                rgba(255,255,255,0.6) 0%, 
+                var(--secondary-blue-light) 20%, 
+                var(--secondary-blue-dark) 80%, 
+                rgba(0,0,0,0.3) 100%);
+            transform: translateY(-3px);
+            box-shadow: 
+                var(--shadow-lg),
+                var(--shadow-blue),
+                inset 0 2px 0 rgba(255, 255, 255, 0.4),
+                inset 0 -2px 0 rgba(0, 0, 0, 0.15);
+        }
+
+        .btn:active {
+            transform: translateY(-1px);
+            box-shadow: 
+                var(--shadow-sm),
+                inset 0 -1px 0 rgba(255, 255, 255, 0.2),
+                inset 0 1px 2px rgba(0, 0, 0, 0.2);
+        }
+
+        /* Workflow Diagram */
+        .workflow {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin: 2rem 0;
+            padding: 2rem;
+            background-color: var(--card-background);
+            border-radius: 0.75rem;
+            overflow-x: auto;
+        }
+
+        .workflow-step {
+            text-align: center;
+            flex: 1;
+            position: relative;
+            padding: 1rem;
+        }
+
+        .workflow-step::after {
+            content: '→';
+            position: absolute;
+            right: -1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 1.5rem;
+            color: var(--primary-color);
+        }
+
+        .workflow-step:last-child::after {
+            display: none;
+        }
+
+        .workflow-icon {
+            width: 60px;
+            height: 60px;
+            background: var(--lustrous-primary);
+            color: white;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 0.5rem;
+            font-size: 1.5rem;
+            font-weight: 700;
+            box-shadow: 
+                var(--shadow-primary),
+                inset 0 2px 0 rgba(255, 255, 255, 0.4),
+                inset 0 -2px 0 rgba(0, 0, 0, 0.2);
+            transition: all var(--animation-speed) ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .workflow-icon::before {
+            content: "";
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, 
+                transparent 30%, 
+                rgba(255, 255, 255, 0.3) 50%, 
+                transparent 70%);
+            animation: shimmer 3s infinite;
+        }
+
+        .workflow-step:hover .workflow-icon {
+            animation: breathe 2s ease-in-out infinite;
+            box-shadow: 
+                var(--shadow-lg),
+                var(--shadow-primary),
+                0 0 20px rgba(59, 130, 246, 0.4);
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                transform: translateX(-100%);
+                transition: transform 0.3s ease;
+            }
+
+            .sidebar.active {
+                transform: translateX(0);
+            }
+
+            .main-content {
+                margin-left: 0;
+                padding: 1.5rem;
+            }
+
+            .feature-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .workflow {
+                flex-direction: column;
+            }
+
+            .workflow-step::after {
+                display: none;
+            }
+        }
+
+        /* Print Styles */
+        @media print {
+            .sidebar {
+                display: none;
+            }
+
+            .main-content {
+                margin-left: 0;
+            }
+
+            .card {
+                break-inside: avoid;
+            }
+        }
+
+        /* Search Box */
+        .search-box {
+            margin-bottom: 2rem;
+            position: relative;
+        }
+
+        .search-box input {
+            width: 100%;
+            padding: 0.75rem 1rem 0.75rem 3rem;
+            border: 2px solid var(--border-color);
+            border-radius: 0.5rem;
+            font-size: 1rem;
+            transition: border-color 0.3s ease;
+        }
+
+        .search-box input:focus {
+            outline: none;
+            border-color: var(--primary-color);
+        }
+
+        .search-box::before {
+            content: "🔍";
+            position: absolute;
+            left: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            font-size: 1.2rem;
+        }
+
+        /* Sticky Header */
+        .sticky-header {
+            position: sticky;
+            top: 0;
+            background-color: var(--card-background);
+            z-index: 10;
+            padding: 1rem 0;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        /* === PROGRESS BAR LUSTRÉE === */
+        .progress-bar {
+            background: var(--background-gray);
+            border-radius: var(--border-radius-md);
+            overflow: hidden;
+            height: 8px;
+            position: relative;
+            margin-bottom: 0.5rem;
+        }
+
+        .progress-fill {
+            background: var(--gradient-primary);
+            height: 100%;
+            border-radius: var(--border-radius-md);
+            transition: width var(--animation-speed-slow) ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .progress-fill::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, 
+                transparent 0%, 
+                rgba(255, 255, 255, 0.3) 50%, 
+                transparent 100%);
+            animation: shimmer 2s infinite;
+        }
+
+        /* Tabs */
+        .tabs {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 2rem;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        .tab {
+            padding: 0.75rem 1.5rem;
+            background-color: transparent;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-secondary);
+            transition: all 0.3s ease;
+            position: relative;
+        }
+
+        .tab:hover {
+            color: var(--primary-color);
+        }
+
+        .tab.active {
+            color: var(--primary-color);
+        }
+
+        .tab.active::after {
+            content: '';
+            position: absolute;
+            bottom: -2px;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background-color: var(--primary-color);
+        }
+
+        /* Tooltip */
+        .tooltip {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+
+        .tooltip .tooltiptext {
+            visibility: hidden;
+            width: 200px;
+            background-color: var(--secondary-color);
+            color: white;
+            text-align: center;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            position: absolute;
+            z-index: 1;
+            bottom: 125%;
+            left: 50%;
+            margin-left: -100px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-size: 0.875rem;
+        }
+
+        .tooltip:hover .tooltiptext {
+            visibility: visible;
+            opacity: 1;
+        }
+    </style>
+</head>
+<body>
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar" id="sidebar">
+        <h2>ERP AI</h2>
+        
+        <div class="search-box">
+            <input type="text" placeholder="Rechercher..." id="searchInput">
+        </div>
+
+        <div class="nav-section">
+            <h3>Démarrage</h3>
+            <a href="#introduction" class="nav-link">Introduction</a>
+            <a href="#demarrage-rapide" class="nav-link">Démarrage Rapide</a>
+            <a href="#configuration-initiale" class="nav-link">Configuration Initiale</a>
+        </div>
+
+        <div class="nav-section">
+            <h3>Modules Principaux</h3>
+            <a href="#gestion-projets" class="nav-link">Gestion des Projets</a>
+            <a href="#bons-travail" class="nav-link">Bons de Travail</a>
+            <a href="#timetracker" class="nav-link">TimeTracker</a>
+            <a href="#crm" class="nav-link">CRM</a>
+            <a href="#inventaire" class="nav-link">Inventaire</a>
+            <a href="#ressources-humaines" class="nav-link">Ressources Humaines</a>
+            <a href="#assistant-ia" class="nav-link">Assistant IA</a>
+        </div>
+
+        <div class="nav-section">
+            <h3>Workflows</h3>
+            <a href="#workflows-metier" class="nav-link">Workflows Métier</a>
+            <a href="#rapports-exports" class="nav-link">Rapports et Exports</a>
+        </div>
+
+        <div class="nav-section">
+            <h3>Administration</h3>
+            <a href="#administration" class="nav-link">Administration</a>
+            <a href="#securite" class="nav-link">Sécurité</a>
+            <a href="#maintenance" class="nav-link">Maintenance</a>
+        </div>
+
+        <div class="nav-section">
+            <h3>Support</h3>
+            <a href="#depannage" class="nav-link">Dépannage</a>
+            <a href="#support-contact" class="nav-link">Support et Contact</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+        <!-- Introduction -->
+        <section id="introduction">
+            <h1>📘 Manuel d'Utilisation - ERP AI</h1>
+            
+            <div class="alert alert-info">
+                <span class="alert-icon">ℹ️</span>
+                <div>
+                    <strong>Bienvenue dans ERP AI</strong><br>
+                    Cette documentation complète vous guidera à travers toutes les fonctionnalités de votre système ERP conçu pour les entreprises de construction québécoises.
+                </div>
+            </div>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4><span class="icon">🏗️</span> Gestion de Projets</h4>
+                    <p>24 étapes de construction québécoises avec suivi en temps réel</p>
+                </div>
+                <div class="feature-card">
+                    <h4><span class="icon">⏱️</span> TimeTracker Unifié</h4>
+                    <p>Pointage par opération avec synchronisation automatique</p>
+                </div>
+                <div class="feature-card">
+                    <h4><span class="icon">🤖</span> Assistant IA Claude</h4>
+                    <p>Analyses intelligentes et recommandations automatiques</p>
+                </div>
+                <div class="feature-card">
+                    <h4><span class="icon">📊</span> 61 Postes de Travail</h4>
+                    <p>Configuration complète pour production industrielle</p>
+                </div>
+            </div>
+
+            <h3>🎯 Fonctionnalités Clés</h3>
+            <ul>
+                <li><strong>Gestion de projets</strong> avec 24 étapes de construction québécoises</li>
+                <li><strong>Bons de travail</strong> avec suivi en temps réel</li>
+                <li><strong>TimeTracker unifié</strong> pour pointage par opération</li>
+                <li><strong>CRM intégré</strong> avec pipeline de vente</li>
+                <li><strong>Inventaire</strong> avec support impérial/métrique</li>
+                <li><strong>Assistant IA Claude</strong> pour analyses et recommandations</li>
+                <li><strong>61 postes de travail</strong> préconfigurés</li>
+                <li><strong>Export PDF</strong> professionnel</li>
+            </ul>
+
+            <h3>💻 Configuration Requise</h3>
+            <div class="card">
+                <table>
+                    <tr>
+                        <th>Composant</th>
+                        <th>Minimum</th>
+                        <th>Recommandé</th>
+                    </tr>
+                    <tr>
+                        <td>Navigateur</td>
+                        <td>Chrome 90+, Firefox 88+, Edge 90+</td>
+                        <td>Dernières versions</td>
+                    </tr>
+                    <tr>
+                        <td>Résolution</td>
+                        <td>1280x720</td>
+                        <td>1920x1080</td>
+                    </tr>
+                    <tr>
+                        <td>Connexion Internet</td>
+                        <td>Requise pour l'Assistant IA</td>
+                        <td>Haut débit</td>
+                    </tr>
+                    <tr>
+                        <td>Système</td>
+                        <td>Windows 10, macOS 10.14, Linux</td>
+                        <td>Windows 11, macOS 12+</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Démarrage Rapide -->
+        <section id="demarrage-rapide">
+            <h2>🚀 Démarrage Rapide</h2>
+
+            <h3>Lancement de l'Application</h3>
+
+            <div class="tabs">
+                <button class="tab active" onclick="showTab('windows')">Windows</button>
+                <button class="tab" onclick="showTab('manual')">Installation Manuelle</button>
+            </div>
+
+            <div id="windows-content" class="tab-content">
+                <div class="card">
+                    <ol>
+                        <li>Double-cliquez sur <code>Run.bat</code></li>
+                        <li>L'application s'ouvre automatiquement dans votre navigateur</li>
+                        <li>URL locale : <code>http://localhost:8501</code></li>
+                    </ol>
+                </div>
+            </div>
+
+            <div id="manual-content" class="tab-content" style="display: none;">
+                <div class="card">
+                    <pre># Installation des dépendances
+pip install -r requirements.txt
+
+# Lancement de l'application
+streamlit run app.py</pre>
+                </div>
+            </div>
+
+            <h3>🔐 Première Connexion</h3>
+            
+            <div class="workflow">
+                <div class="workflow-step">
+                    <div class="workflow-icon">1</div>
+                    <h4>Page de connexion</h4>
+                    <p>Entrez vos identifiants</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">2</div>
+                    <h4>Sélection module</h4>
+                    <p>Menu latéral pour naviguer</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">3</div>
+                    <h4>Tableau de bord</h4>
+                    <p>Vue d'ensemble de l'activité</p>
+                </div>
+            </div>
+
+            <div class="alert alert-warning">
+                <span class="alert-icon">⚠️</span>
+                <div>
+                    <strong>Important</strong><br>
+                    Changez votre mot de passe dès la première connexion pour sécuriser votre compte.
+                </div>
+            </div>
+
+            <h4>Identifiants par défaut</h4>
+            <div class="card">
+                <table>
+                    <tr>
+                        <th>Rôle</th>
+                        <th>Utilisateur</th>
+                        <th>Mot de passe</th>
+                        <th>Permissions</th>
+                    </tr>
+                    <tr>
+                        <td>Administrateur</td>
+                        <td><code>admin</code></td>
+                        <td><code>admin123</code></td>
+                        <td>Accès complet</td>
+                    </tr>
+                    <tr>
+                        <td>Direction</td>
+                        <td><code>direction</code></td>
+                        <td><code>direction!123</code></td>
+                        <td>Vue stratégique</td>
+                    </tr>
+                    <tr>
+                        <td>Superviseur</td>
+                        <td><code>superviseur</code></td>
+                        <td><code>super2024</code></td>
+                        <td>Gestion équipes</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Configuration Initiale -->
+        <section id="configuration-initiale">
+            <h2>⚙️ Configuration Initiale</h2>
+
+            <h3>👥 Création des Utilisateurs</h3>
+            <div class="card">
+                <ol>
+                    <li>Allez dans <strong>Administration</strong> → <strong>Gestion des utilisateurs</strong></li>
+                    <li>Cliquez sur <button class="btn btn-primary">➕ Nouvel utilisateur</button></li>
+                    <li>Remplissez les informations :
+                        <ul>
+                            <li>Nom et prénom</li>
+                            <li>Email (unique)</li>
+                            <li>Rôle (admin, superviseur, employé)</li>
+                            <li>Département</li>
+                        </ul>
+                    </li>
+                    <li>Cliquez sur <button class="btn btn-primary">💾 Enregistrer</button></li>
+                </ol>
+            </div>
+
+            <h3>🏢 Configuration de l'Entreprise</h3>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📋 Informations générales</h4>
+                    <ul>
+                        <li>Nom de l'entreprise</li>
+                        <li>Adresse complète</li>
+                        <li>Numéros RBQ et NEQ</li>
+                        <li>Coordonnées</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🏭 Départements</h4>
+                    <ul>
+                        <li>Production</li>
+                        <li>Structure</li>
+                        <li>Ingénierie</li>
+                        <li>Qualité</li>
+                        <li>Administration</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🔧 Postes de travail</h4>
+                    <ul>
+                        <li>61 postes préconfigurés</li>
+                        <li>Capacité horaire</li>
+                        <li>Coût horaire</li>
+                        <li>Compétences requises</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Gestion des Projets -->
+        <section id="gestion-projets">
+            <h2>📊 Gestion des Projets</h2>
+
+            <h3>Création d'un Nouveau Projet</h3>
+            
+            <div class="workflow">
+                <div class="workflow-step">
+                    <div class="workflow-icon">📝</div>
+                    <h4>Informations</h4>
+                    <p>Nom, client, dates</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">⚙️</div>
+                    <h4>Configuration</h4>
+                    <p>Priorité, étape, responsable</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">✅</div>
+                    <h4>Validation</h4>
+                    <p>Créer le projet</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h4>1. Menu : Projets → Nouveau projet</h4>
+                <h4>2. Informations de base :</h4>
+                <ul>
+                    <li>Nom du projet</li>
+                    <li>Client (sélection depuis CRM)</li>
+                    <li>PO client</li>
+                    <li>Dates prévues (début/fin)</li>
+                    <li>Budget estimé</li>
+                </ul>
+                
+                <h4>3. Configuration technique :</h4>
+                <ul>
+                    <li>Priorité (FAIBLE, MOYEN, ÉLEVÉ, URGENT)</li>
+                    <li>Étape de construction (24 choix)</li>
+                    <li>Responsable projet</li>
+                </ul>
+                
+                <h4>4. Validation : Cliquez sur <button class="btn btn-primary">✅ Créer le projet</button></h4>
+            </div>
+
+            <h3>Suivi de Projet</h3>
+
+            <div class="tabs">
+                <button class="tab active" onclick="showProjectView('dashboard')">Dashboard</button>
+                <button class="tab" onclick="showProjectView('kanban')">Kanban</button>
+                <button class="tab" onclick="showProjectView('gantt')">Gantt</button>
+                <button class="tab" onclick="showProjectView('calendar')">Calendrier</button>
+            </div>
+
+            <div id="dashboard-view" class="project-view">
+                <div class="card">
+                    <h4>Vue Dashboard</h4>
+                    <ul>
+                        <li><strong>Progression globale</strong> : Barre de progression visuelle</li>
+                        <li><strong>Statut actuel</strong> : À FAIRE, EN COURS, TERMINÉ</li>
+                        <li><strong>Budget</strong> : Consommé vs Prévu</li>
+                        <li><strong>Délais</strong> : Retard/Avance en jours</li>
+                        <li><strong>Équipe</strong> : Employés assignés</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Gestion de la Progression</h3>
+            
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>✋ Mise à jour manuelle</h4>
+                    <ul>
+                        <li>Slider de progression (0-100%)</li>
+                        <li>Commentaires de suivi</li>
+                        <li>Photos de chantier</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🤖 Mise à jour automatique</h4>
+                    <ul>
+                        <li>Via TimeTracker (heures pointées)</li>
+                        <li>Via Bons de Travail terminés</li>
+                        <li>Calcul pondéré par opération</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Bons de Travail -->
+        <section id="bons-travail">
+            <h2>📋 Bons de Travail (BT)</h2>
+
+            <h3>Création d'un Bon de Travail</h3>
+
+            <div class="card">
+                <h4>1. Accès : Production → Nouveau BT</h4>
+                
+                <h4>2. En-tête du BT :</h4>
+                <ul>
+                    <li>Numéro automatique (BT-2024-XXXXX)</li>
+                    <li>Projet associé (obligatoire)</li>
+                    <li>Client final</li>
+                    <li>Date de création</li>
+                    <li>Priorité (NORMAL, URGENT, CRITIQUE)</li>
+                </ul>
+
+                <h4>3. Ajout des Opérations :</h4>
+                <pre>Pour chaque opération :
+- Poste de travail (61 choix)
+- Description détaillée
+- Durée estimée (heures)
+- Employé assigné
+- Matériaux requis</pre>
+
+                <h4>4. Validation et Envoi :</h4>
+                <ul>
+                    <li><strong>Brouillon</strong> : Sauvegarde sans validation</li>
+                    <li><strong>Validé</strong> : Prêt pour production</li>
+                    <li><strong>En cours</strong> : Démarré en atelier</li>
+                </ul>
+            </div>
+
+            <h3>Workflow des Bons de Travail</h3>
+
+            <div class="workflow">
+                <div class="workflow-step">
+                    <div class="workflow-icon">📝</div>
+                    <h4>BROUILLON</h4>
+                    <p>Création</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">✅</div>
+                    <h4>VALIDÉ</h4>
+                    <p>Approval</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">🔧</div>
+                    <h4>EN_COURS</h4>
+                    <p>Production</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">✔️</div>
+                    <h4>TERMINÉ</h4>
+                    <p>Livraison</p>
+                </div>
+            </div>
+
+            <h3>Suivi de Production</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📊 Vue Kanban Production</h4>
+                    <ul>
+                        <li>Colonnes par statut</li>
+                        <li>Code couleur par priorité</li>
+                        <li>Temps restant estimé</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📈 Tableau de Bord BT</h4>
+                    <ul>
+                        <li>BT en retard : Liste rouge</li>
+                        <li>Charge par poste : Graphique</li>
+                        <li>Performance équipe : KPIs</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🔄 Synchronisation TimeTracker</h4>
+                    <ul>
+                        <li>Heures pointées en temps réel</li>
+                        <li>Progression automatique</li>
+                        <li>Alertes de dépassement</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- TimeTracker -->
+        <section id="timetracker">
+            <h2>⏱️ TimeTracker</h2>
+
+            <h3>Interface Employé</h3>
+
+            <div class="card">
+                <ol>
+                    <li><strong>Connexion</strong> : TimeTracker → Mode Employé</li>
+                    <li><strong>Sélection</strong> :
+                        <ul>
+                            <li>Votre nom dans la liste</li>
+                            <li>Bon de Travail actif</li>
+                            <li>Opération spécifique</li>
+                        </ul>
+                    </li>
+                    <li><strong>Pointage</strong> :
+                        <ul>
+                            <li><button class="btn btn-primary" style="background-color: #10B981;">🟢 POINTER ENTRÉE</button> : Début du travail</li>
+                            <li><button class="btn btn-primary" style="background-color: #EF4444;">🔴 POINTER SORTIE</button> : Fin du travail</li>
+                            <li>Confirmation visuelle</li>
+                        </ul>
+                    </li>
+                    <li><strong>Historique</strong> :
+                        <ul>
+                            <li>Vos pointages du jour</li>
+                            <li>Total heures/semaine</li>
+                            <li>Heures par projet</li>
+                        </ul>
+                    </li>
+                </ol>
+            </div>
+
+            <h3>Interface Superviseur</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>👁️ Vue d'ensemble</h4>
+                    <ul>
+                        <li>Employés en activité</li>
+                        <li>Postes occupés</li>
+                        <li>BT en cours</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>⚙️ Gestion des pointages</h4>
+                    <ul>
+                        <li>Correction d'erreurs</li>
+                        <li>Validation des heures</li>
+                        <li>Export pour paie</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📊 Analyses</h4>
+                    <ul>
+                        <li>Productivité par employé</li>
+                        <li>Utilisation des postes</li>
+                        <li>Temps par opération</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Automatisations TimeTracker</h3>
+
+            <div class="alert alert-success">
+                <span class="alert-icon">✅</span>
+                <div>
+                    <strong>Fonctionnalités automatiques</strong>
+                    <ul>
+                        <li><strong>Mapping intelligent</strong> : Poste → Étape construction</li>
+                        <li><strong>Calcul progression</strong> : Heures réelles/prévues</li>
+                        <li><strong>Alertes</strong> : Dépassements, retards</li>
+                        <li><strong>Synchronisation</strong> : BT ↔ Projets</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- CRM -->
+        <section id="crm">
+            <h2>🤝 CRM</h2>
+
+            <h3>Gestion des Entreprises</h3>
+
+            <div class="card">
+                <h4>1. Nouvelle entreprise :</h4>
+                <ul>
+                    <li>Informations légales</li>
+                    <li>Secteur d'activité</li>
+                    <li>Contact principal</li>
+                    <li>Adresse complète</li>
+                    <li>Site web</li>
+                </ul>
+
+                <h4>2. Suivi relationnel :</h4>
+                <ul>
+                    <li>Historique interactions</li>
+                    <li>Projets associés</li>
+                    <li>Documents partagés</li>
+                    <li>Notes internes</li>
+                </ul>
+            </div>
+
+            <h3>Pipeline de Vente</h3>
+
+            <div class="workflow">
+                <div class="workflow-step">
+                    <div class="workflow-icon">🎯</div>
+                    <h4>LEAD</h4>
+                    <p>Nouveau contact</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">✅</div>
+                    <h4>QUALIFIÉ</h4>
+                    <p>Intérêt confirmé</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">📄</div>
+                    <h4>PROPOSITION</h4>
+                    <p>Devis envoyé</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">💬</div>
+                    <h4>NÉGOCIATION</h4>
+                    <p>Discussion active</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">🏆</div>
+                    <h4>GAGNÉ/PERDU</h4>
+                    <p>Résultat final</p>
+                </div>
+            </div>
+
+            <div class="alert alert-info">
+                <span class="alert-icon">💡</span>
+                <div>
+                    <strong>Conversion en projet</strong><br>
+                    Utilisez le bouton <button class="btn btn-primary">Créer projet</button> pour convertir automatiquement une opportunité gagnée en projet actif avec reprise de toutes les informations.
+                </div>
+            </div>
+        </section>
+
+        <!-- Inventaire -->
+        <section id="inventaire">
+            <h2>📦 Inventaire</h2>
+
+            <h3>Gestion des Articles</h3>
+
+            <div class="card">
+                <h4>1. Ajout d'article :</h4>
+                <ul>
+                    <li>Code article unique</li>
+                    <li>Désignation complète</li>
+                    <li>Catégorie (Matériaux, Outils, Consommables)</li>
+                    <li>Unités doubles (impérial + métrique)</li>
+                </ul>
+
+                <h4>2. Configuration stock :</h4>
+                <ul>
+                    <li>Quantité actuelle</li>
+                    <li>Stock minimum</li>
+                    <li>Stock maximum</li>
+                    <li>Point de commande</li>
+                    <li>Fournisseur principal</li>
+                </ul>
+
+                <h4>3. Conversions automatiques :</h4>
+                <pre>Exemples :
+- 1 feuille 4x8 = 32 pi² = 2.97 m²
+- 1 gallon = 3.785 litres
+- 1 lb = 0.454 kg</pre>
+            </div>
+
+            <h3>Mouvements de Stock</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📥 Entrées</h4>
+                    <ul>
+                        <li>Réception fournisseur</li>
+                        <li>Retour de chantier</li>
+                        <li>Transfert inter-sites</li>
+                        <li>Avec bon de réception</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📤 Sorties</h4>
+                    <ul>
+                        <li>Affectation projet/BT</li>
+                        <li>Consommation directe</li>
+                        <li>Perte/Casse</li>
+                        <li>Mise au rebut</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🔒 Réservations</h4>
+                    <ul>
+                        <li>Par projet futur</li>
+                        <li>Bloque le stock</li>
+                        <li>Alertes si insuffisant</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Tableau de Bord Inventaire</h3>
+
+            <div class="card">
+                <div class="progress-bar">
+                    <div class="progress-fill" style="width: 75%;"></div>
+                </div>
+                <p>Taux de rotation stock : 75%</p>
+
+                <table>
+                    <tr>
+                        <th>Métrique</th>
+                        <th>Valeur</th>
+                        <th>Statut</th>
+                    </tr>
+                    <tr>
+                        <td>Valeur totale</td>
+                        <td>$125,450</td>
+                        <td>✅ Normal</td>
+                    </tr>
+                    <tr>
+                        <td>Articles critiques</td>
+                        <td>3</td>
+                        <td>⚠️ Attention</td>
+                    </tr>
+                    <tr>
+                        <td>Rotation moyenne</td>
+                        <td>4.2x/an</td>
+                        <td>✅ Bon</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Ressources Humaines -->
+        <section id="ressources-humaines">
+            <h2>👥 Ressources Humaines</h2>
+
+            <h3>Gestion des Employés</h3>
+
+            <div class="card">
+                <h4>1. Fiche employé :</h4>
+                <ul>
+                    <li>Informations personnelles</li>
+                    <li>Contrat (CDI, CDD, Temporaire)</li>
+                    <li>Département et poste</li>
+                    <li>Date d'embauche</li>
+                    <li>Salaire horaire</li>
+                </ul>
+
+                <h4>2. Compétences :</h4>
+                <ul>
+                    <li>Certifications (RBQ, CCQ)</li>
+                    <li>Formations suivies</li>
+                    <li>Niveaux (Débutant → Expert)</li>
+                    <li>Dates de validité</li>
+                </ul>
+
+                <h4>3. Affectations :</h4>
+                <ul>
+                    <li>Projets en cours</li>
+                    <li>Charge de travail</li>
+                    <li>Disponibilités</li>
+                    <li>Congés planifiés</li>
+                </ul>
+            </div>
+
+            <h3>Tableau de Bord RH</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📊 Métriques globales</h4>
+                    <ul>
+                        <li>Effectif total/département</li>
+                        <li>Taux de présence</li>
+                        <li>Heures travaillées/mois</li>
+                        <li>Coût salarial</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📈 Analyses</h4>
+                    <ul>
+                        <li>Productivité individuelle</li>
+                        <li>Compétences manquantes</li>
+                        <li>Formation à planifier</li>
+                        <li>Turnover</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📅 Planning</h4>
+                    <ul>
+                        <li>Vue calendrier équipe</li>
+                        <li>Congés et absences</li>
+                        <li>Charge prévisionnelle</li>
+                        <li>Besoins recrutement</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Assistant IA -->
+        <section id="assistant-ia">
+            <h2>🤖 Assistant IA</h2>
+
+            <h3>Configuration</h3>
+
+            <div class="card">
+                <h4>1. Première utilisation :</h4>
+                <ul>
+                    <li>Menu : Assistant IA</li>
+                    <li>Clé API Claude requise</li>
+                    <li>Configuration dans variables d'environnement</li>
+                </ul>
+
+                <h4>2. Paramètres :</h4>
+                <ul>
+                    <li>Modèle : Claude Sonnet 4</li>
+                    <li>Température : 0.7 (créativité)</li>
+                    <li>Tokens max : 1500</li>
+                    <li>Cache : Activé (économies)</li>
+                </ul>
+            </div>
+
+            <h3>Utilisation de l'Assistant</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>💬 Chat interactif</h4>
+                    <pre>Exemples de questions :
+- "Analyse la rentabilité du projet X"
+- "Quels employés sont disponibles cette semaine ?"
+- "Prédis les besoins en stock pour le mois prochain"
+- "Optimise le planning de production"</pre>
+                </div>
+                <div class="feature-card">
+                    <h4>📄 Analyse de documents</h4>
+                    <ul>
+                        <li>Upload PDF, Excel, Word</li>
+                        <li>Extraction automatique</li>
+                        <li>Résumé et insights</li>
+                        <li>Recommandations</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📊 Rapports automatiques</h4>
+                    <ul>
+                        <li>Performance mensuelle</li>
+                        <li>Analyse des tendances</li>
+                        <li>Points d'attention</li>
+                        <li>Actions suggérées</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Cas d'Usage Avancés</h3>
+
+            <div class="card">
+                <table>
+                    <tr>
+                        <th>Domaine</th>
+                        <th>Utilisation</th>
+                        <th>Bénéfices</th>
+                    </tr>
+                    <tr>
+                        <td>Optimisation planning</td>
+                        <td>Analyse charge de travail et suggestions</td>
+                        <td>+25% efficacité</td>
+                    </tr>
+                    <tr>
+                        <td>Analyse financière</td>
+                        <td>Rentabilité par projet et prévisions</td>
+                        <td>Décisions éclairées</td>
+                    </tr>
+                    <tr>
+                        <td>Support décisionnel</td>
+                        <td>Priorisation et stratégie</td>
+                        <td>ROI optimisé</td>
+                    </tr>
+                </table>
+            </div>
+        </section>
+
+        <!-- Workflows Métier -->
+        <section id="workflows-metier">
+            <h2>🔄 Workflows Métier</h2>
+
+            <h3>Workflow Projet Complet</h3>
+
+            <div class="workflow" style="flex-wrap: wrap;">
+                <div class="workflow-step">
+                    <div class="workflow-icon">💼</div>
+                    <h4>1. COMMERCIAL</h4>
+                    <p>CRM → Opportunité → Devis → Négociation</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">🚀</div>
+                    <h4>2. LANCEMENT</h4>
+                    <p>Projet créé → Équipe assignée → Planning défini</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">🏭</div>
+                    <h4>3. PRODUCTION</h4>
+                    <p>BT créés → Opérations planifiées → TimeTracker actif</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">📊</div>
+                    <h4>4. SUIVI</h4>
+                    <p>Progression temps réel → Ajustements → Contrôle qualité</p>
+                </div>
+                <div class="workflow-step">
+                    <div class="workflow-icon">✅</div>
+                    <h4>5. LIVRAISON</h4>
+                    <p>Tests finaux → Documentation → Facturation → Clôture</p>
+                </div>
+            </div>
+
+            <h3>Workflow Bon de Travail</h3>
+
+            <div class="card">
+                <pre>1. CRÉATION
+   Projet sélectionné → Opérations définies → Ressources allouées
+                ↓
+2. VALIDATION
+   Vérification faisabilité → Matériaux disponibles → Approval
+                ↓
+3. PRODUCTION
+   Lancement atelier → Pointages TimeTracker → Suivi progression
+                ↓
+4. CONTRÔLE
+   Qualité vérifiée → Écarts analysés → Documentation
+                ↓
+5. CLÔTURE
+   BT terminé → Mise à jour projet → Facturation possible</pre>
+            </div>
+
+            <h3>Workflow Production</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📅 1. PLANIFICATION</h4>
+                    <p>Charge atelier → Capacité disponible → Ordonnancement</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔧 2. PRÉPARATION</h4>
+                    <p>Matériaux réservés → Postes assignés → Gammes définies</p>
+                </div>
+                <div class="feature-card">
+                    <h4>⚡ 3. EXÉCUTION</h4>
+                    <p>Pointage début → Suivi temps réel → Alertes dépassement</p>
+                </div>
+                <div class="feature-card">
+                    <h4>🔄 4. AJUSTEMENTS</h4>
+                    <p>Réaffectations → Priorisation → Optimisation flux</p>
+                </div>
+                <div class="feature-card">
+                    <h4>📊 5. REPORTING</h4>
+                    <p>KPIs production → Analyse écarts → Amélioration continue</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Rapports et Exports -->
+        <section id="rapports-exports">
+            <h2>📊 Rapports et Exports</h2>
+
+            <h3>Tableaux de Bord</h3>
+
+            <div class="tabs">
+                <button class="tab active" onclick="showDashboard('principal')">Principal</button>
+                <button class="tab" onclick="showDashboard('production')">Production</button>
+                <button class="tab" onclick="showDashboard('financier')">Financier</button>
+                <button class="tab" onclick="showDashboard('rh')">RH</button>
+            </div>
+
+            <div id="dashboard-principal" class="dashboard-content">
+                <div class="card">
+                    <h4>Dashboard Principal</h4>
+                    <ul>
+                        <li><strong>Vue 360°</strong> : Tous les KPIs en un coup d'œil</li>
+                        <li><strong>Filtres</strong> : Période, département, projet</li>
+                        <li><strong>Widgets</strong> : Personnalisables par utilisateur</li>
+                        <li><strong>Actualisation</strong> : Temps réel</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Formats d'Export</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📄 PDF</h4>
+                    <ul>
+                        <li>Documents officiels</li>
+                        <li>Mise en page professionnelle</li>
+                        <li>Logo et en-têtes</li>
+                        <li>Signature électronique</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📊 Excel</h4>
+                    <ul>
+                        <li>Données brutes</li>
+                        <li>Tableaux croisés</li>
+                        <li>Graphiques</li>
+                        <li>Multi-feuilles</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>📁 CSV</h4>
+                    <ul>
+                        <li>Import autres systèmes</li>
+                        <li>Analyse externe</li>
+                        <li>Sauvegarde données</li>
+                        <li>UTF-8 avec BOM</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🔌 API/JSON</h4>
+                    <ul>
+                        <li>Intégrations tierces</li>
+                        <li>Synchronisation</li>
+                        <li>Webhooks</li>
+                        <li>Format standardisé</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>Génération de Documents</h3>
+
+            <div class="card">
+                <h4>Bons de Travail PDF</h4>
+                <ol>
+                    <li>Sélectionnez le BT</li>
+                    <li>Cliquez <button class="btn btn-primary">📄 Générer PDF</button></li>
+                    <li>Options :
+                        <ul>
+                            <li>Avec/sans prix</li>
+                            <li>Détails techniques</li>
+                            <li>Photos jointes</li>
+                        </ul>
+                    </li>
+                    <li><button class="btn btn-secondary">📥 Télécharger</button> ou <button class="btn btn-secondary">📧 Envoyer</button></li>
+                </ol>
+            </div>
+        </section>
+
+        <!-- Administration -->
+        <section id="administration">
+            <h2>⚙️ Administration</h2>
+
+            <h3>Paramètres Système</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>🏢 Configuration Générale</h4>
+                    <ul>
+                        <li>Informations entreprise</li>
+                        <li>Paramètres régionaux</li>
+                        <li>Notifications</li>
+                        <li>Intégrations</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>👥 Gestion des Utilisateurs</h4>
+                    <ul>
+                        <li>Création de comptes</li>
+                        <li>Rôles et permissions</li>
+                        <li>Groupes d'utilisateurs</li>
+                        <li>Audit des accès</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>🔒 Sécurité</h3>
+
+            <div class="card">
+                <h4>Politique de Mots de Passe</h4>
+                <ul>
+                    <li>✅ Minimum 8 caractères</li>
+                    <li>✅ Majuscules + minuscules</li>
+                    <li>✅ Chiffres + caractères spéciaux</li>
+                    <li>✅ Changement tous les 90 jours</li>
+                    <li>✅ Historique (5 derniers)</li>
+                </ul>
+
+                <h4>Sessions et Accès</h4>
+                <ul>
+                    <li>Timeout : 2 heures inactivité</li>
+                    <li>Connexions simultanées limitées</li>
+                    <li>Log des accès</li>
+                    <li>Détection anomalies</li>
+                </ul>
+            </div>
+
+            <h3>💾 Sauvegardes</h3>
+
+            <div class="alert alert-info">
+                <span class="alert-icon">ℹ️</span>
+                <div>
+                    <strong>Sauvegardes automatiques</strong>
+                    <ul>
+                        <li>Quotidiennes à 2h AM</li>
+                        <li>Hebdomadaires dimanche</li>
+                        <li>Mensuelles 1er du mois</li>
+                        <li>Retention 30 jours</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>📊 Monitoring</h3>
+
+            <table>
+                <tr>
+                    <th>Composant</th>
+                    <th>Métrique</th>
+                    <th>Seuil d'alerte</th>
+                </tr>
+                <tr>
+                    <td>Base de données</td>
+                    <td>Taille</td>
+                    <td>> 80% capacité</td>
+                </tr>
+                <tr>
+                    <td>Performance</td>
+                    <td>Temps réponse</td>
+                    <td>> 3 secondes</td>
+                </tr>
+                <tr>
+                    <td>Utilisateurs</td>
+                    <td>Concurrent</td>
+                    <td>> 100 actifs</td>
+                </tr>
+                <tr>
+                    <td>Erreurs</td>
+                    <td>Taux</td>
+                    <td>> 1%</td>
+                </tr>
+            </table>
+        </section>
+
+        <!-- Dépannage -->
+        <section id="depannage">
+            <h2>❓ Dépannage</h2>
+
+            <h3>Problèmes Fréquents</h3>
+
+            <div class="card">
+                <h4>🔐 Connexion Impossible</h4>
+                <p><strong>Vérifiez :</strong></p>
+                <ul>
+                    <li>Identifiants corrects</li>
+                    <li>Majuscules activées ?</li>
+                    <li>Compte actif ?</li>
+                    <li>Session expirée ?</li>
+                </ul>
+                <p><strong>Solutions :</strong></p>
+                <ul>
+                    <li>Réinitialiser mot de passe</li>
+                    <li>Contacter administrateur</li>
+                    <li>Vider cache navigateur</li>
+                    <li>Essayer autre navigateur</li>
+                </ul>
+            </div>
+
+            <div class="card">
+                <h4>🐌 Performance Lente</h4>
+                <p><strong>Causes possibles :</strong></p>
+                <ul>
+                    <li>Connexion Internet</li>
+                    <li>Navigateur surchargé</li>
+                    <li>Base données volumineuse</li>
+                    <li>Trop d'utilisateurs</li>
+                </ul>
+                <p><strong>Optimisations :</strong></p>
+                <ul>
+                    <li>Fermer onglets inutiles</li>
+                    <li>Redémarrer navigateur</li>
+                    <li>Utiliser filtres données</li>
+                    <li>Éviter heures de pointe</li>
+                </ul>
+            </div>
+
+            <h3>🛠️ Maintenance Utilisateur</h3>
+
+            <div class="card">
+                <h4>Nettoyage Navigateur</h4>
+                <pre>Chrome/Edge :
+1. Paramètres → Confidentialité
+2. Effacer données navigation
+3. Cocher : Cookies, Cache
+4. Période : Toutes
+5. Effacer les données</pre>
+            </div>
+
+            <h3>🚨 Urgences</h3>
+
+            <div class="alert alert-danger">
+                <span class="alert-icon">🚨</span>
+                <div>
+                    <strong>Perte de Données</strong>
+                    <ol>
+                        <li>NE PAS PANIQUER</li>
+                        <li>Noter exactement ce qui s'est passé</li>
+                        <li>Ne pas tenter de recréer</li>
+                        <li>Contacter immédiatement support</li>
+                        <li>Les backups automatiques existent</li>
+                    </ol>
+                </div>
+            </div>
+        </section>
+
+        <!-- Support et Contact -->
+        <section id="support-contact">
+            <h2>📞 Support et Contact</h2>
+
+            <h3>Contacts Support</h3>
+
+            <div class="feature-grid">
+                <div class="feature-card">
+                    <h4>📧 Support Niveau 1</h4>
+                    <ul>
+                        <li><strong>Email</strong> : support@erp-ai.com</li>
+                        <li><strong>Téléphone</strong> : 1-800-XXX-XXXX</li>
+                        <li><strong>Heures</strong> : Lun-Ven 8h-17h EST</li>
+                        <li><strong>Délai réponse</strong> : <4 heures</li>
+                    </ul>
+                </div>
+                <div class="feature-card">
+                    <h4>🔧 Support Niveau 2</h4>
+                    <ul>
+                        <li><strong>Email</strong> : tech@erp-ai.com</li>
+                        <li><strong>Urgences</strong> : 1-800-XXX-TECH</li>
+                        <li><strong>Disponibilité</strong> : 7j/7</li>
+                        <li><strong>Maintenance</strong> : Dim 2h-6h</li>
+                    </ul>
+                </div>
+            </div>
+
+            <h3>💬 Ressources d'Aide</h3>
+
+            <div class="card">
+                <h4>Base de Connaissances</h4>
+                <ul>
+                    <li>FAQ complète en ligne</li>
+                    <li>Tutoriels vidéo</li>
+                    <li>Guides PDF téléchargeables</li>
+                    <li>Forum communautaire</li>
+                </ul>
+
+                <h4>Formation</h4>
+                <table>
+                    <tr>
+                        <th>Type</th>
+                        <th>Durée</th>
+                        <th>Format</th>
+                        <th>Certification</th>
+                    </tr>
+                    <tr>
+                        <td>Formation initiale</td>
+                        <td>2 jours</td>
+                        <td>Sur site</td>
+                        <td>✅ Oui</td>
+                    </tr>
+                    <tr>
+                        <td>Formation continue</td>
+                        <td>2 heures</td>
+                        <td>Webinaire</td>
+                        <td>❌ Non</td>
+                    </tr>
+                </table>
+            </div>
+
+            <h3>🔄 Mises à Jour</h3>
+
+            <div class="card">
+                <h4>Cycle de Release</h4>
+                <ul>
+                    <li><strong>Majeures</strong> : Trimestrielles</li>
+                    <li><strong>Mineures</strong> : Mensuelles</li>
+                    <li><strong>Correctifs</strong> : Si nécessaire</li>
+                    <li><strong>Sécurité</strong> : Immédiat</li>
+                </ul>
+            </div>
+
+            <h3>📝 Feedback</h3>
+
+            <div class="alert alert-success">
+                <span class="alert-icon">💡</span>
+                <div>
+                    <strong>Vos suggestions sont importantes !</strong><br>
+                    Utilisez le formulaire in-app ou envoyez vos idées à feedback@erp-ai.com
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div style="margin-top: 4rem; padding-top: 2rem; border-top: 2px solid var(--border-color); text-align: center; color: var(--text-secondary);">
+                <p><strong>© 2024 ERP AI - Tous droits réservés</strong></p>
+                <p>Version du manuel : 2.0 - Janvier 2024</p>
+            </div>
+        </section>
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        // Navigation active link
+        const navLinks = document.querySelectorAll('.nav-link');
+        const sections = document.querySelectorAll('section');
+
+        function setActiveLink() {
+            let current = '';
+            sections.forEach(section => {
+                const sectionTop = section.offsetTop;
+                const sectionHeight = section.clientHeight;
+                if (pageYOffset >= sectionTop - 100) {
+                    current = section.getAttribute('id');
+                }
+            });
+
+            navLinks.forEach(link => {
+                link.classList.remove('active');
+                if (link.getAttribute('href').substring(1) === current) {
+                    link.classList.add('active');
+                }
+            });
+        }
+
+        window.addEventListener('scroll', setActiveLink);
+
+        // Search functionality
+        const searchInput = document.getElementById('searchInput');
+        searchInput.addEventListener('input', function(e) {
+            const searchTerm = e.target.value.toLowerCase();
+            const allSections = document.querySelectorAll('section');
+            
+            allSections.forEach(section => {
+                const text = section.textContent.toLowerCase();
+                if (text.includes(searchTerm)) {
+                    section.style.display = 'block';
+                } else {
+                    section.style.display = 'none';
+                }
+            });
+        });
+
+        // Tab functionality
+        function showTab(tabName) {
+            const tabs = document.querySelectorAll('.tab');
+            const contents = document.querySelectorAll('.tab-content');
+            
+            tabs.forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            if (tabName === 'windows') {
+                document.getElementById('windows-content').style.display = 'block';
+                document.getElementById('manual-content').style.display = 'none';
+            } else {
+                document.getElementById('windows-content').style.display = 'none';
+                document.getElementById('manual-content').style.display = 'block';
+            }
+        }
+
+        function showProjectView(viewName) {
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        function showDashboard(dashboardName) {
+            const tabs = document.querySelectorAll('.tab');
+            tabs.forEach(tab => tab.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        // Smooth scrolling
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+
+        // Print functionality
+        window.addEventListener('beforeprint', function() {
+            document.body.classList.add('printing');
+        });
+
+        window.addEventListener('afterprint', function() {
+            document.body.classList.remove('printing');
+        });
+
+        // Mobile menu toggle
+        const mobileMenuToggle = document.createElement('button');
+        mobileMenuToggle.innerHTML = '☰';
+        mobileMenuToggle.style.cssText = `
+            display: none;
+            position: fixed;
+            top: 1rem;
+            left: 1rem;
+            z-index: 1000;
+            padding: 0.5rem;
+            background: var(--primary-color);
+            color: white;
+            border: none;
+            border-radius: 0.5rem;
+            font-size: 1.5rem;
+            cursor: pointer;
+        `;
+
+        document.body.appendChild(mobileMenuToggle);
+
+        mobileMenuToggle.addEventListener('click', function() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('active');
+        });
+
+        // Show mobile menu button on small screens
+        function checkMobile() {
+            if (window.innerWidth <= 768) {
+                mobileMenuToggle.style.display = 'block';
+            } else {
+                mobileMenuToggle.style.display = 'none';
+                document.getElementById('sidebar').classList.remove('active');
+            }
+        }
+
+        window.addEventListener('resize', checkMobile);
+        checkMobile();
+
+        // Initialize
+        setActiveLink();
+    </script>
+</body>
+</html>

@@ -1,0 +1,4460 @@
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from datetime import datetime, timedelta, date
+import json
+from typing import Dict, List, Optional, Any
+import os
+import tempfile
+
+class GestionnaireFournisseurs:
+    """
+    Gestionnaire complet pour les fournisseurs - ADAPTÉ CONSTRUCTION QUÉBEC
+    Intégré avec la base de données SQLite unifiée
+    + NOUVEAUX : Formulaires Demande de Prix et Bon d'Achat
+    + INTÉGRATION PRODUITS : Utilise les produits du catalogue via GestionnaireProduits
+    + NETTOYAGE : Suppression complète du système d'activation/désactivation
+    + SIMPLIFICATION : Code Fournisseur automatique + Catégorie optionnelle
+    + EXPORT HTML : Templates professionnels pour DP et BA
+    + CONSTRUCTION QUÉBEC : Catégories matériaux, normes CSA, certifications RBQ
+    """
+    
+    # Catégories spécifiques construction Québec
+    CATEGORIES_CONSTRUCTION = [
+        "Béton et ciment",
+        "Acier et métaux",
+        "Bois et charpente",
+        "Isolation et étanchéité",
+        "Plomberie et tuyauterie",
+        "Électricité et câblage",
+        "Toiture et bardeau",
+        "Portes et fenêtres",
+        "Revêtements extérieurs",
+        "Gypse et plâtre",
+        "Peinture et finition",
+        "Quincaillerie et fixations",
+        "Équipements de chantier",
+        "Sécurité et EPI",
+        "Outillage spécialisé",
+        "Location d'équipements",
+        "Services de béton",
+        "Transport et livraison",
+        "Agrégats et remblai",
+        "Produits d'excavation"
+    ]
+    
+    # Certifications construction Québec
+    CERTIFICATIONS_CONSTRUCTION = [
+        "RBQ - Régie du bâtiment",
+        "CCQ - Commission de la construction",
+        "CNESST - Santé sécurité",
+        "ISO 9001:2015",
+        "BNQ - Bureau de normalisation",
+        "CSA - Canadian Standards",
+        "LEED - Bâtiment durable",
+        "Garantie GCR",
+        "ACQ - Association construction",
+        "APCHQ - Habitation"
+    ]
+    
+    def __init__(self, db, crm_manager=None, product_manager=None):
+        self.db = db
+        self.crm_manager = crm_manager  # ← référence vers le CRM pour les entreprises
+        self.product_manager = product_manager  # ← NOUVELLE DÉPENDANCE : référence vers le gestionnaire de produits
+        # Nettoyer la base de données au démarrage si nécessaire
+        self._cleanup_database()
+        # Initialiser les fournisseurs construction si vide
+        self._init_fournisseurs_construction()
+    
+    def _cleanup_database(self):
+        """Nettoie la base de données en supprimant la colonne est_actif si elle existe"""
+        try:
+            # Vérifier si la colonne existe
+            check_query = "PRAGMA table_info(fournisseurs)"
+            columns = self.db.execute_query(check_query)
+            
+            has_est_actif = any(col['name'] == 'est_actif' for col in columns)
+            
+            if has_est_actif:
+                st.info("🔧 Nettoyage de la base de données en cours...")
+                
+                # Créer une nouvelle table sans la colonne est_actif
+                self.db.execute_update("""
+                    CREATE TABLE IF NOT EXISTS fournisseurs_new (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        company_id INTEGER NOT NULL,
+                        code_fournisseur TEXT UNIQUE,
+                        categorie_produits TEXT,
+                        delai_livraison_moyen INTEGER DEFAULT 14,
+                        conditions_paiement TEXT DEFAULT '30 jours net',
+                        evaluation_qualite INTEGER DEFAULT 5,
+                        contact_commercial TEXT,
+                        contact_technique TEXT,
+                        certifications TEXT,
+                        notes_evaluation TEXT,
+                        date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        date_modification TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (company_id) REFERENCES companies (id)
+                    )
+                """)
+                
+                # Copier les données (sans est_actif)
+                self.db.execute_update("""
+                    INSERT INTO fournisseurs_new 
+                    (id, company_id, code_fournisseur, categorie_produits, delai_livraison_moyen,
+                     conditions_paiement, evaluation_qualite, contact_commercial, contact_technique,
+                     certifications, notes_evaluation, date_creation, date_modification)
+                    SELECT id, company_id, code_fournisseur, categorie_produits, delai_livraison_moyen,
+                           conditions_paiement, evaluation_qualite, contact_commercial, contact_technique,
+                           certifications, notes_evaluation, date_creation, date_modification
+                    FROM fournisseurs
+                """)
+                
+                # Supprimer l'ancienne table et renommer la nouvelle
+                self.db.execute_update("DROP TABLE fournisseurs")
+                self.db.execute_update("ALTER TABLE fournisseurs_new RENAME TO fournisseurs")
+                
+                st.success("✅ Base de données nettoyée - Colonne est_actif supprimée")
+                
+        except Exception as e:
+            print(f"Info: Nettoyage DB pas nécessaire ou erreur: {e}")
+    
+    def _init_fournisseurs_construction(self):
+        """Initialise des fournisseurs de construction québécois si la base est vide"""
+        try:
+            # Vérifier si des fournisseurs existent déjà
+            count_query = "SELECT COUNT(*) as count FROM fournisseurs"
+            result = self.db.execute_query(count_query)
+            
+            if result and result[0]['count'] == 0:
+                # Liste de fournisseurs construction québécois typiques
+                fournisseurs_demo = [
+                    {
+                        "nom": "Béton Provincial",
+                        "secteur": "Construction - Béton",
+                        "categorie": "Béton et ciment",
+                        "adresse": "2000 Rue du Béton, Montréal, QC H1A 1A1",
+                        "site_web": "www.betonprovincial.qc.ca",
+                        "certifications": ["RBQ - Régie du bâtiment", "BNQ - Bureau de normalisation", "ISO 9001:2015"],
+                        "delai": 2,
+                        "conditions": "Net 30 jours",
+                        "evaluation": 9
+                    },
+                    {
+                        "nom": "Rona L'Entrepôt",
+                        "secteur": "Construction - Matériaux",
+                        "categorie": "Quincaillerie et fixations",
+                        "adresse": "1500 Boul. Henri-Bourassa, Québec, QC G1J 1A1",
+                        "site_web": "www.rona.ca",
+                        "certifications": ["ISO 9001:2015"],
+                        "delai": 1,
+                        "conditions": "Net 30 jours",
+                        "evaluation": 8
+                    },
+                    {
+                        "nom": "Lafarge Canada",
+                        "secteur": "Construction - Ciment",
+                        "categorie": "Béton et ciment",
+                        "adresse": "500 Rue du Ciment, Laval, QC H7L 1A1",
+                        "site_web": "www.lafarge.ca",
+                        "certifications": ["RBQ - Régie du bâtiment", "CSA - Canadian Standards", "ISO 9001:2015"],
+                        "delai": 3,
+                        "conditions": "Net 45 jours",
+                        "evaluation": 9
+                    },
+                    {
+                        "nom": "Bois Expansion",
+                        "secteur": "Construction - Bois",
+                        "categorie": "Bois et charpente",
+                        "adresse": "3000 Route du Bois, Sherbrooke, QC J1L 1A1",
+                        "site_web": "www.boisexpansion.com",
+                        "certifications": ["FSC - Forest Stewardship", "CSA - Canadian Standards"],
+                        "delai": 7,
+                        "conditions": "Net 30 jours",
+                        "evaluation": 8
+                    },
+                    {
+                        "nom": "Toitures BP",
+                        "secteur": "Construction - Toiture",
+                        "categorie": "Toiture et bardeau",
+                        "adresse": "800 Rue des Couvreurs, Trois-Rivières, QC G8T 1A1",
+                        "site_web": "www.toituresbp.com",
+                        "certifications": ["RBQ - Régie du bâtiment", "AMCQ - Maîtres couvreurs"],
+                        "delai": 5,
+                        "conditions": "Net 30 jours",
+                        "evaluation": 9
+                    },
+                    {
+                        "nom": "Location Hertz Equipment",
+                        "secteur": "Construction - Location",
+                        "categorie": "Location d'équipements",
+                        "adresse": "1200 Autoroute 20, Longueuil, QC J4G 1A1",
+                        "site_web": "www.hertzequip.com",
+                        "certifications": ["CNESST - Santé sécurité"],
+                        "delai": 1,
+                        "conditions": "Paiement à la location",
+                        "evaluation": 8
+                    },
+                    {
+                        "nom": "Isolofoam",
+                        "secteur": "Construction - Isolation",
+                        "categorie": "Isolation et étanchéité",
+                        "adresse": "400 Rue de l'Isolation, Valleyfield, QC J6S 1A1",
+                        "site_web": "www.isolofoam.com",
+                        "certifications": ["CSA - Canadian Standards", "CCMC - Centre canadien"],
+                        "delai": 3,
+                        "conditions": "Net 30 jours",
+                        "evaluation": 9
+                    },
+                    {
+                        "nom": "Groupe Permacon",
+                        "secteur": "Construction - Pavage",
+                        "categorie": "Agrégats et remblai",
+                        "adresse": "2500 Boul. Industriel, Saint-Eustache, QC J7R 1A1",
+                        "site_web": "www.permacon.ca",
+                        "certifications": ["BNQ - Bureau de normalisation", "CSA - Canadian Standards"],
+                        "delai": 5,
+                        "conditions": "Net 45 jours",
+                        "evaluation": 8
+                    }
+                ]
+                
+                # Créer d'abord les entreprises dans la table companies
+                for fourn in fournisseurs_demo:
+                    # Vérifier si l'entreprise existe déjà
+                    check_company = self.db.execute_query(
+                        "SELECT id FROM companies WHERE nom = ?", 
+                        (fourn["nom"],)
+                    )
+                    
+                    if not check_company:
+                        # Créer l'entreprise
+                        company_id = self.db.execute_insert("""
+                            INSERT INTO companies (nom, secteur, adresse, site_web, type_entreprise)
+                            VALUES (?, ?, ?, ?, 'Fournisseur')
+                        """, (fourn["nom"], fourn["secteur"], fourn["adresse"], fourn["site_web"]))
+                        
+                        if company_id:
+                            # Créer le fournisseur
+                            code_fournisseur = self.generate_fournisseur_code()
+                            certifications_str = ", ".join(fourn["certifications"])
+                            
+                            self.db.execute_insert("""
+                                INSERT INTO fournisseurs 
+                                (company_id, code_fournisseur, categorie_produits, 
+                                 delai_livraison_moyen, conditions_paiement, evaluation_qualite,
+                                 certifications, notes_evaluation)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """, (
+                                company_id,
+                                code_fournisseur,
+                                fourn["categorie"],
+                                fourn["delai"],
+                                fourn["conditions"],
+                                fourn["evaluation"],
+                                certifications_str,
+                                f"Fournisseur majeur de {fourn['categorie'].lower()} au Québec"
+                            ))
+                
+                st.success("✅ Fournisseurs de construction québécois initialisés")
+                
+        except Exception as e:
+            print(f"Info: Initialisation fournisseurs construction: {e}")
+    
+    def get_all_fournisseurs(self) -> List[Dict]:
+        """
+        Récupère tous les fournisseurs avec leurs statistiques et company_id.
+        VERSION CORRIGÉE ET ROBUSTE : Utilise des sous-requêtes pour éviter les GROUP BY complexes.
+        Garantit que seuls les fournisseurs liés à une entreprise valide sont retournés.
+        """
+        try:
+            query = '''
+                SELECT 
+                    f.*,
+                    c.nom, 
+                    c.secteur, 
+                    c.adresse, 
+                    c.site_web,
+                    (SELECT COUNT(form.id) 
+                     FROM formulaires form 
+                     WHERE form.company_id = f.company_id 
+                       AND form.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')) as nombre_commandes,
+                    (SELECT COALESCE(SUM(form.montant_total), 0) 
+                     FROM formulaires form 
+                     WHERE form.company_id = f.company_id 
+                       AND form.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')) as montant_total_commandes
+                FROM fournisseurs f
+                JOIN companies c ON f.company_id = c.id
+                ORDER BY c.nom
+            '''
+            rows = self.db.execute_query(query)
+            return [dict(row) for row in rows] if rows else []
+        except Exception as e:
+            st.error(f"Erreur critique lors de la récupération des fournisseurs : {e}")
+            return []
+    
+    def get_fournisseur_by_id(self, fournisseur_id: int) -> Dict:
+        """Récupère un fournisseur par ID avec détails complets"""
+        try:
+            query = '''
+                SELECT f.*, c.nom, c.secteur, c.adresse, c.site_web, c.notes as company_notes
+                FROM fournisseurs f
+                JOIN companies c ON f.company_id = c.id
+                WHERE f.id = ?
+            '''
+            result = self.db.execute_query(query, (fournisseur_id,))
+            return dict(result[0]) if result else {}
+        except Exception as e:
+            st.error(f"Erreur récupération fournisseur: {e}")
+            return {}
+    
+    def get_fournisseurs_by_category(self, category: str = None) -> List[Dict]:
+        """Récupère les fournisseurs par catégorie"""
+        try:
+            if category:
+                query = '''
+                    SELECT f.*, c.nom, c.secteur
+                    FROM fournisseurs f
+                    JOIN companies c ON f.company_id = c.id
+                    WHERE f.categorie_produits LIKE ?
+                    ORDER BY c.nom
+                '''
+                rows = self.db.execute_query(query, (f"%{category}%",))
+            else:
+                query = '''
+                    SELECT f.*, c.nom, c.secteur
+                    FROM fournisseurs f
+                    JOIN companies c ON f.company_id = c.id
+                    ORDER BY c.nom
+                '''
+                rows = self.db.execute_query(query)
+            
+            return [dict(row) for row in rows]
+        except Exception as e:
+            st.error(f"Erreur récupération par catégorie: {e}")
+            return []
+    
+    def generate_fournisseur_code(self) -> str:
+        """Génère un code fournisseur automatique"""
+        try:
+            annee = datetime.now().year
+            
+            # Requête pour récupérer le dernier numéro
+            query = '''
+                SELECT code_fournisseur FROM fournisseurs 
+                WHERE code_fournisseur IS NOT NULL 
+                AND code_fournisseur LIKE ?
+                ORDER BY id DESC 
+                LIMIT 10
+            '''
+            pattern = f"FOUR-{annee}-%"
+            
+            try:
+                result = self.db.execute_query(query, (pattern,))
+            except Exception:
+                result = []
+            
+            # Traitement des résultats avec validation
+            sequence = 1
+            if result:
+                for row in result:
+                    code = row['code_fournisseur']
+                    if code and isinstance(code, str):
+                        # Validation du format : FOUR-YYYY-NNN
+                        parts = code.split('-')
+                        if len(parts) == 3 and parts[0] == 'FOUR' and parts[1] == str(annee):
+                            try:
+                                current_seq = int(parts[2])
+                                if current_seq >= sequence:
+                                    sequence = current_seq + 1
+                                    break  # Premier résultat valide trouvé
+                            except (ValueError, IndexError):
+                                continue
+            
+            # Génération du nouveau code
+            nouveau_code = f"FOUR-{annee}-{sequence:03d}"
+            
+            # Vérification d'unicité (sécurité supplémentaire)
+            verification_query = "SELECT COUNT(*) as count FROM fournisseurs WHERE code_fournisseur = ?"
+            verification_result = self.db.execute_query(verification_query, (nouveau_code,))
+            
+            if verification_result and verification_result[0]['count'] > 0:
+                # Si le code existe déjà, incrémenter jusqu'à trouver un code libre
+                while True:
+                    sequence += 1
+                    nouveau_code = f"FOUR-{annee}-{sequence:03d}"
+                    verification_result = self.db.execute_query(verification_query, (nouveau_code,))
+                    if not verification_result or verification_result[0]['count'] == 0:
+                        break
+                    if sequence > 999:  # Sécurité pour éviter une boucle infinie
+                        raise Exception("Impossible de générer un code unique (limite atteinte)")
+            
+            return nouveau_code
+            
+        except Exception as e:
+            print(f"Erreur dans generate_fournisseur_code: {e}")
+            # En cas d'erreur, générer un code basé sur timestamp
+            timestamp = datetime.now().strftime('%Y%m%d%H%M%S')
+            fallback_code = f"FOUR-{timestamp[-8:]}"
+            return fallback_code
+    
+    def create_fournisseur(self, company_id: int, fournisseur_data: Dict) -> int:
+        """Crée un nouveau fournisseur"""
+        try:
+            return self.db.add_fournisseur(company_id, fournisseur_data)
+        except Exception as e:
+            st.error(f"Erreur création fournisseur: {e}")
+            return None
+    
+    def update_fournisseur(self, fournisseur_id: int, fournisseur_data: Dict) -> bool:
+        """Met à jour un fournisseur existant"""
+        try:
+            # Construire la requête de mise à jour
+            update_fields = []
+            params = []
+            
+            for field in ['code_fournisseur', 'categorie_produits', 'delai_livraison_moyen', 
+                         'conditions_paiement', 'evaluation_qualite', 'contact_commercial',
+                         'contact_technique', 'certifications', 'notes_evaluation']:
+                if field in fournisseur_data:
+                    update_fields.append(f"{field} = ?")
+                    params.append(fournisseur_data[field])
+            
+            if update_fields:
+                query = f"UPDATE fournisseurs SET {', '.join(update_fields)} WHERE id = ?"
+                params.append(fournisseur_id)
+                
+                affected = self.db.execute_update(query, tuple(params))
+                return affected > 0
+            
+            return False
+            
+        except Exception as e:
+            st.error(f"Erreur mise à jour fournisseur: {e}")
+            return False
+    
+    def delete_fournisseur(self, fournisseur_id: int) -> bool:
+        """Supprime définitivement un fournisseur"""
+        try:
+            query = "DELETE FROM fournisseurs WHERE id = ?"
+            affected = self.db.execute_update(query, (fournisseur_id,))
+            return affected > 0
+        except Exception as e:
+            st.error(f"Erreur suppression fournisseur: {e}")
+            return False
+    
+    def get_fournisseur_performance(self, fournisseur_id: int, days: int = 365) -> Dict:
+        """Calcule les performances d'un fournisseur"""
+        try:
+            # Statistiques commandes
+            query_commandes = '''
+                SELECT 
+                    COUNT(*) as total_commandes,
+                    SUM(f.montant_total) as montant_total,
+                    AVG(f.montant_total) as montant_moyen,
+                    MIN(f.date_creation) as premiere_commande,
+                    MAX(f.date_creation) as derniere_commande
+                FROM formulaires f
+                JOIN companies c ON f.company_id = c.id
+                JOIN fournisseurs fou ON c.id = fou.company_id
+                WHERE fou.id = ? 
+                AND f.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+                AND f.date_creation >= DATE('now', '-{} days')
+            '''.format(days)
+            
+            result = self.db.execute_query(query_commandes, (fournisseur_id,))
+            performance = dict(result[0]) if result else {}
+            
+            # Statistiques livraisons
+            query_livraisons = '''
+                SELECT 
+                    COUNT(*) as total_livraisons,
+                    COUNT(CASE WHEN a.date_livraison_reelle <= a.date_livraison_prevue THEN 1 END) as livraisons_temps,
+                    AVG(JULIANDAY(a.date_livraison_reelle) - JULIANDAY(a.date_livraison_prevue)) as retard_moyen_jours
+                FROM approvisionnements a
+                JOIN formulaires f ON a.formulaire_id = f.id
+                JOIN companies c ON f.company_id = c.id
+                JOIN fournisseurs fou ON c.id = fou.company_id
+                WHERE fou.id = ? 
+                AND a.date_livraison_reelle IS NOT NULL
+                AND a.date_commande >= DATE('now', '-{} days')
+            '''.format(days)
+            
+            result_livr = self.db.execute_query(query_livraisons, (fournisseur_id,))
+            if result_livr:
+                livraisons_data = dict(result_livr[0])
+                performance.update(livraisons_data)
+                
+                # Calcul taux de ponctualité
+                if livraisons_data.get('total_livraisons', 0) > 0:
+                    performance['taux_ponctualite'] = (
+                        livraisons_data.get('livraisons_temps', 0) / 
+                        livraisons_data['total_livraisons'] * 100
+                    )
+            
+            return performance
+            
+        except Exception as e:
+            st.error(f"Erreur calcul performance: {e}")
+            return {}
+    
+    def get_categories_disponibles(self) -> List[str]:
+        """Récupère toutes les catégories de produits disponibles"""
+        try:
+            query = '''
+                SELECT DISTINCT categorie_produits 
+                FROM fournisseurs 
+                WHERE categorie_produits IS NOT NULL 
+                AND categorie_produits != ''
+                ORDER BY categorie_produits
+            '''
+            rows = self.db.execute_query(query)
+            return [row['categorie_produits'] for row in rows]
+        except Exception as e:
+            st.error(f"Erreur récupération catégories: {e}")
+            return []
+    
+    def get_fournisseurs_statistics(self) -> Dict:
+        """Retourne des statistiques globales sur les fournisseurs"""
+        try:
+            stats = {
+                'total_fournisseurs': 0,
+                'par_categorie': {},
+                'evaluation_moyenne': 0.0,
+                'delai_moyen': 0,
+                'montant_total_commandes': 0.0,
+                'top_performers': [],
+                'certifications_count': {}
+            }
+            
+            # Statistiques de base
+            query_base = '''
+                SELECT 
+                    COUNT(*) as total,
+                    AVG(evaluation_qualite) as eval_moy,
+                    AVG(delai_livraison_moyen) as delai_moy
+                FROM fournisseurs
+            '''
+            result = self.db.execute_query(query_base)
+            if result:
+                row = result[0]
+                stats['total_fournisseurs'] = row['total']
+                stats['evaluation_moyenne'] = round(row['eval_moy'] or 0, 1)
+                stats['delai_moyen'] = round(row['delai_moy'] or 0)
+            
+            # Par catégorie
+            query_cat = '''
+                SELECT categorie_produits, COUNT(*) as count
+                FROM fournisseurs
+                WHERE categorie_produits IS NOT NULL
+                GROUP BY categorie_produits
+                ORDER BY count DESC
+            '''
+            rows_cat = self.db.execute_query(query_cat)
+            for row in rows_cat:
+                if row['categorie_produits']:
+                    stats['par_categorie'][row['categorie_produits']] = row['count']
+            
+            # Montant total commandes
+            query_montant = '''
+                SELECT SUM(f.montant_total) as total_montant
+                FROM formulaires f
+                JOIN companies c ON f.company_id = c.id
+                JOIN fournisseurs fou ON c.id = fou.company_id
+                WHERE f.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+            '''
+            result_montant = self.db.execute_query(query_montant)
+            if result_montant:
+                stats['montant_total_commandes'] = result_montant[0]['total_montant'] or 0.0
+            
+            # Top performers (par évaluation et volume)
+            query_top = '''
+                SELECT c.nom, f.evaluation_qualite, COUNT(form.id) as nb_commandes,
+                       SUM(form.montant_total) as montant_total
+                FROM fournisseurs f
+                JOIN companies c ON f.company_id = c.id
+                LEFT JOIN formulaires form ON c.id = form.company_id 
+                    AND form.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+                GROUP BY f.id, c.nom, f.evaluation_qualite
+                ORDER BY f.evaluation_qualite DESC, montant_total DESC
+                LIMIT 5
+            '''
+            rows_top = self.db.execute_query(query_top)
+            stats['top_performers'] = [dict(row) for row in rows_top]
+            
+            return stats
+            
+        except Exception as e:
+            st.error(f"Erreur statistiques fournisseurs: {e}")
+            return {}
+
+    # =========================================================================
+    # MÉTHODES POUR INTÉGRATION PRODUITS - REMPLACE l'ancien système CRM
+    # =========================================================================
+    
+    def get_produits_crm_for_selection(self, search_term: str = None) -> List[Dict]:
+        """Récupère les produits du catalogue pour sélection dans formulaires"""
+        if not self.product_manager:
+            st.warning("⚠️ Module Produits non disponible. Impossible d'accéder au catalogue produits.")
+            return []
+        
+        try:
+            if search_term:
+                # Utiliser la recherche du gestionnaire de produits
+                produits = self.product_manager.search_produits(search_term)
+            else:
+                # Récupérer tous les produits actifs
+                produits = self.product_manager.get_all_products()
+            
+            return produits
+            
+        except Exception as e:
+            st.error(f"Erreur récupération produits: {e}")
+            return []
+    
+    def get_produit_crm_by_id(self, produit_id: int) -> Dict:
+        """Récupère un produit par ID"""
+        if not self.product_manager:
+            return {}
+        
+        try:
+            return self.product_manager.get_produit_by_id(produit_id) or {}
+        except Exception as e:
+            st.error(f"Erreur récupération produit {produit_id}: {e}")
+            return {}
+    
+    def get_categories_produits_crm(self) -> List[str]:
+        """Récupère les catégories de produits du catalogue"""
+        if not self.product_manager:
+            return []
+        
+        try:
+            produits = self.product_manager.get_all_products()
+            categories = list(set(p.get('categorie', '') for p in produits if p.get('categorie')))
+            return sorted(categories)
+        except Exception as e:
+            st.error(f"Erreur récupération catégories: {e}")
+            return []
+
+    # =========================================================================
+    # MÉTHODES POUR FORMULAIRES DEMANDE DE PRIX ET BON D'ACHAT
+    # =========================================================================
+    
+    def generate_document_number(self, type_formulaire: str) -> str:
+        """Génère un numéro de document automatique"""
+        try:
+            prefixes = {
+                'DEMANDE_PRIX': 'DP',
+                'BON_ACHAT': 'BA'
+            }
+            
+            prefix = prefixes.get(type_formulaire, 'DOC')
+            annee = datetime.now().year
+            
+            # Récupérer le dernier numéro pour ce type et cette année
+            query = '''
+                SELECT numero_document FROM formulaires 
+                WHERE type_formulaire = ? AND numero_document LIKE ?
+                ORDER BY id DESC LIMIT 1
+            '''
+            pattern = f"{prefix}-{annee}-%"
+            result = self.db.execute_query(query, (type_formulaire, pattern))
+            
+            if result:
+                last_num = result[0]['numero_document']
+                sequence = int(last_num.split('-')[-1]) + 1
+            else:
+                sequence = 1
+            
+            return f"{prefix}-{annee}-{sequence:03d}"
+            
+        except Exception as e:
+            st.error(f"Erreur génération numéro: {e}")
+            return f"ERR-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    def create_formulaire_with_lines(self, formulaire_data: Dict, lignes_data: List[Dict]) -> int:
+        """Crée un formulaire avec ses lignes de détail"""
+        try:
+            with self.db.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Créer le formulaire principal
+                query_formulaire = '''
+                    INSERT INTO formulaires 
+                    (type_formulaire, numero_document, company_id, employee_id, statut, 
+                     priorite, date_echeance, notes, metadonnees_json)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                
+                cursor.execute(query_formulaire, (
+                    formulaire_data['type_formulaire'],
+                    formulaire_data['numero_document'],
+                    formulaire_data['company_id'],
+                    formulaire_data.get('employee_id'),
+                    formulaire_data.get('statut', 'BROUILLON'),
+                    formulaire_data.get('priorite', 'NORMAL'),
+                    formulaire_data.get('date_echeance'),
+                    formulaire_data.get('notes', ''),
+                    formulaire_data.get('metadonnees_json', '{}')
+                ))
+                
+                formulaire_id = cursor.lastrowid
+                
+                # Créer les lignes de détail
+                query_ligne = '''
+                    INSERT INTO formulaire_lignes
+                    (formulaire_id, sequence_ligne, description, code_article,
+                     quantite, unite, prix_unitaire, notes_ligne)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                
+                for i, ligne in enumerate(lignes_data, 1):
+                    cursor.execute(query_ligne, (
+                        formulaire_id,
+                        i,
+                        ligne['description'],
+                        ligne.get('code_article', ''),
+                        ligne['quantite'],
+                        ligne.get('unite', 'UN'),
+                        ligne.get('prix_unitaire', 0.0),
+                        ligne.get('notes_ligne', '')
+                    ))
+                
+                # Enregistrer la création dans l'historique
+                cursor.execute('''
+                    INSERT INTO formulaire_validations
+                    (formulaire_id, employee_id, type_validation, commentaires)
+                    VALUES (?, ?, 'CREATION', ?)
+                ''', (formulaire_id, formulaire_data.get('employee_id'), f"Création {formulaire_data['type_formulaire']}"))
+                
+                conn.commit()
+                return formulaire_id
+                
+        except Exception as e:
+            st.error(f"Erreur création formulaire: {e}")
+            return None
+    
+    def get_formulaires_fournisseur(self, company_id: int, type_formulaire: str = None) -> List[Dict]:
+        """Récupère les formulaires d'un fournisseur"""
+        try:
+            query = '''
+                SELECT f.*, 
+                       COUNT(fl.id) as nombre_lignes,
+                       COALESCE(SUM(fl.montant_ligne), 0) as montant_calcule
+                FROM formulaires f
+                LEFT JOIN formulaire_lignes fl ON f.id = fl.formulaire_id
+                WHERE f.company_id = ?
+            '''
+            params = [company_id]
+            
+            if type_formulaire:
+                query += " AND f.type_formulaire = ?"
+                params.append(type_formulaire)
+            
+            query += '''
+                GROUP BY f.id
+                ORDER BY f.date_creation DESC
+            '''
+            
+            rows = self.db.execute_query(query, tuple(params))
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            st.error(f"Erreur récupération formulaires: {e}")
+            return []
+    
+    def get_formulaire_details_with_lines(self, formulaire_id: int) -> Dict:
+        """Récupère un formulaire avec ses lignes de détail"""
+        try:
+            # Récupérer le formulaire
+            query_formulaire = '''
+                SELECT f.*, c.nom as company_nom
+                FROM formulaires f
+                LEFT JOIN companies c ON f.company_id = c.id
+                WHERE f.id = ?
+            '''
+            result = self.db.execute_query(query_formulaire, (formulaire_id,))
+            
+            if not result:
+                return {}
+            
+            formulaire = dict(result[0])
+            
+            # Récupérer les lignes
+            query_lignes = '''
+                SELECT * FROM formulaire_lignes 
+                WHERE formulaire_id = ? 
+                ORDER BY sequence_ligne
+            '''
+            lignes = self.db.execute_query(query_lignes, (formulaire_id,))
+            formulaire['lignes'] = [dict(ligne) for ligne in lignes]
+            
+            return formulaire
+            
+        except Exception as e:
+            st.error(f"Erreur récupération détails formulaire: {e}")
+            return {}
+
+    # =========================================================================
+    # NOUVELLES MÉTHODES POUR EXPORT HTML
+    # =========================================================================
+    
+    def generate_demande_prix_html(self, formulaire_id: int) -> str:
+        """Génère le HTML d'une demande de prix"""
+        try:
+            # Récupérer les données du formulaire
+            formulaire = self.get_formulaire_details_with_lines(formulaire_id)
+            if not formulaire:
+                return ""
+            
+            # Récupérer les informations du fournisseur
+            fournisseur = self.get_fournisseur_by_id_from_company(formulaire['company_id'])
+            
+            # Calculer les statistiques
+            lignes = formulaire.get('lignes', [])
+            nb_articles = len(lignes)
+            
+            # Métadonnées
+            metadonnees = {}
+            try:
+                metadonnees = json.loads(formulaire.get('metadonnees_json', '{}'))
+            except:
+                pass
+            
+            # Générer le HTML
+            html_content = self._get_demande_prix_template(formulaire, fournisseur, lignes, metadonnees)
+            return html_content
+            
+        except Exception as e:
+            st.error(f"Erreur génération HTML DP: {e}")
+            return ""
+    
+    def generate_bon_achat_html(self, formulaire_id: int) -> str:
+        """Génère le HTML d'un bon d'achat"""
+        try:
+            # Récupérer les données du formulaire
+            formulaire = self.get_formulaire_details_with_lines(formulaire_id)
+            if not formulaire:
+                return ""
+            
+            # Récupérer les informations du fournisseur
+            fournisseur = self.get_fournisseur_by_id_from_company(formulaire['company_id'])
+            
+            # Calculer les totaux
+            lignes = formulaire.get('lignes', [])
+            sous_total = sum(ligne.get('quantite', 0) * ligne.get('prix_unitaire', 0) for ligne in lignes)
+            tva_taux = 14.975  # TVA du Québec
+            tva_montant = sous_total * (tva_taux / 100)
+            total_ttc = sous_total + tva_montant
+            
+            # Métadonnées
+            metadonnees = {}
+            try:
+                metadonnees = json.loads(formulaire.get('metadonnees_json', '{}'))
+            except:
+                pass
+            
+            # Générer le HTML
+            html_content = self._get_bon_achat_template(formulaire, fournisseur, lignes, sous_total, tva_montant, total_ttc, metadonnees)
+            return html_content
+            
+        except Exception as e:
+            st.error(f"Erreur génération HTML BA: {e}")
+            return ""
+    
+    def get_fournisseur_by_id_from_company(self, company_id: int) -> Dict:
+        """Récupère un fournisseur par company_id"""
+        try:
+            query = '''
+                SELECT f.*, c.nom, c.secteur, c.adresse, c.site_web, c.notes as company_notes
+                FROM fournisseurs f
+                JOIN companies c ON f.company_id = c.id
+                WHERE f.company_id = ?
+            '''
+            result = self.db.execute_query(query, (company_id,))
+            return dict(result[0]) if result else {}
+        except Exception as e:
+            st.error(f"Erreur récupération fournisseur par company_id: {e}")
+            return {}
+    
+    def _get_demande_prix_template(self, formulaire: Dict, fournisseur: Dict, lignes: List[Dict], metadonnees: Dict) -> str:
+        """Template HTML pour Demande de Prix"""
+        
+        # Formatage des dates
+        date_creation = datetime.now().strftime('%d/%m/%Y à %H:%M')
+        date_echeance = ""
+        if formulaire.get('date_echeance'):
+            date_echeance = pd.to_datetime(formulaire['date_echeance']).strftime('%d/%m/%Y')
+        
+        # Badge statut
+        statut_badge_class = {
+            'BROUILLON': 'badge-pending',
+            'VALIDÉ': 'badge-in-progress',
+            'ENVOYÉ': 'badge-completed',
+            'APPROUVÉ': 'badge-completed',
+            'TERMINÉ': 'badge-completed',
+            'ANNULÉ': 'badge-on-hold'
+        }.get(formulaire.get('statut', 'BROUILLON'), 'badge-pending')
+        
+        # Badge priorité
+        priorite_badge_class = {
+            'NORMAL': 'badge-in-progress',
+            'URGENT': 'badge-pending',
+            'CRITIQUE': 'badge-on-hold'
+        }.get(formulaire.get('priorite', 'NORMAL'), 'badge-in-progress')
+        
+        # Génération des lignes de produits
+        lignes_html = ""
+        for ligne in lignes:
+            is_from_catalog = metadonnees.get('source_catalog', False)
+            source_icon = "🔗" if is_from_catalog else "📝"
+            
+            lignes_html += f"""
+                <tr>
+                    <td><strong>{source_icon} {ligne.get('description', '')}</strong>
+                        {f"<br><small>Code: {ligne.get('code_article', '')}</small>" if ligne.get('code_article') else ""}
+                        {f"<br><em>{ligne.get('notes_ligne', '')}</em>" if ligne.get('notes_ligne') else ""}
+                    </td>
+                    <td style="text-align: center;">{ligne.get('quantite', 0)}</td>
+                    <td style="text-align: center;">{ligne.get('unite', 'UN')}</td>
+                    <td style="text-align: center;">À chiffrer</td>
+                </tr>
+            """
+        
+        # Informations source catalogue
+        source_info = ""
+        if metadonnees.get('source_catalog'):
+            nb_catalog = metadonnees.get('nb_produits_catalog', 0)
+            nb_manuels = metadonnees.get('nb_produits_manuels', 0)
+            source_info = f"""
+                <div class="instructions-box">
+                    <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">🔗 Source des Produits</h4>
+                    <p><strong>• Produits du catalogue :</strong> {nb_catalog}</p>
+                    <p><strong>• Produits saisis manuellement :</strong> {nb_manuels}</p>
+                    <p><em>Cette demande utilise notre catalogue produits intégré pour une gestion optimisée.</em></p>
+                </div>
+            """
+        
+        # Notes du formulaire
+        notes_section = ""
+        if formulaire.get('notes'):
+            notes_section = f"""
+                <div class="instructions-box">
+                    <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">📝 Instructions Spéciales</h4>
+                    <p>{formulaire['notes']}</p>
+                </div>
+            """
+        
+        return f"""
+            <!DOCTYPE html>
+            <html lang="fr">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Demande de Prix - {formulaire.get('numero_document', '')}</title>
+                <style>
+                    :root {{
+                        --primary-color: #00A971;
+                        --primary-color-darker: #00673D;
+                        --primary-color-darkest: #004C2E;
+                        --primary-color-lighter: #DCFCE7;
+                        --background-color: #F9FAFB;
+                        --secondary-background-color: #FFFFFF;
+                        --text-color: #374151;
+                        --text-color-light: #6B7280;
+                        --border-color: #E5E7EB;
+                        --border-radius-md: 0.5rem;
+                        --box-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+                    }}
+                    
+                    * {{
+                        margin: 0;
+                        padding: 0;
+                        box-sizing: border-box;
+                    }}
+                    
+                    body {{
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        line-height: 1.6;
+                        color: var(--text-color);
+                        background-color: var(--background-color);
+                        margin: 0;
+                        padding: 15px;
+                    }}
+                    
+                    .container {{
+                        max-width: 8.5in;
+                        margin: 0 auto;
+                        background-color: white;
+                        border-radius: 12px;
+                        box-shadow: var(--box-shadow-md);
+                        overflow: hidden;
+                        width: 100%;
+                    }}
+                    
+                    .header {{
+                        background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-darker) 100%);
+                        color: white;
+                        padding: 30px;
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                    }}
+                    
+                    .logo-container {{
+                        display: flex;
+                        align-items: center;
+                        gap: 20px;
+                    }}
+                    
+                    .logo-box {{
+                        background-color: white;
+                        width: 70px;
+                        height: 45px;
+                        border-radius: 8px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+                    }}
+                    
+                    .logo-text {{
+                        font-family: 'Segoe UI', sans-serif;
+                        font-weight: 800;
+                        font-size: 24px;
+                        color: var(--primary-color);
+                        letter-spacing: 1px;
+                    }}
+                    
+                    .company-info {{
+                        text-align: left;
+                    }}
+                    
+                    .company-name {{
+                        font-weight: 700;
+                        font-size: 28px;
+                        margin-bottom: 5px;
+                        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+                    }}
+                    
+                    .company-subtitle {{
+                        font-size: 16px;
+                        opacity: 0.9;
+                    }}
+                    
+                    .contact-info {{
+                        text-align: right;
+                        font-size: 14px;
+                        line-height: 1.4;
+                        opacity: 0.95;
+                    }}
+                    
+                    .document-title {{
+                        background: var(--primary-color-lighter);
+                        padding: 20px 30px;
+                        border-left: 5px solid var(--primary-color);
+                    }}
+                    
+                    .document-title h1 {{
+                        color: var(--primary-color-darker);
+                        font-size: 24px;
+                        margin-bottom: 10px;
+                    }}
+                    
+                    .document-meta {{
+                        display: flex;
+                        justify-content: space-between;
+                        color: var(--text-color-light);
+                        font-size: 14px;
+                    }}
+                    
+                    .content {{
+                        padding: 25px;
+                    }}
+                    
+                    .section {{
+                        margin-bottom: 30px;
+                    }}
+                    
+                    .section-title {{
+                        color: var(--primary-color-darker);
+                        font-size: 18px;
+                        font-weight: 600;
+                        margin-bottom: 15px;
+                        padding-bottom: 8px;
+                        border-bottom: 2px solid var(--primary-color-lighter);
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                    }}
+                    
+                    .info-grid {{
+                        display: grid;
+                        grid-template-columns: 1fr 1fr 1fr;
+                        gap: 15px;
+                        margin-bottom: 20px;
+                    }}
+                    
+                    .info-item {{
+                        background: var(--background-color);
+                        padding: 15px;
+                        border-radius: var(--border-radius-md);
+                        border-left: 3px solid var(--primary-color);
+                    }}
+                    
+                    .info-label {{
+                        font-weight: 600;
+                        color: var(--text-color-light);
+                        font-size: 12px;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        margin-bottom: 5px;
+                    }}
+                    
+                    .info-value {{
+                        font-size: 16px;
+                        color: var(--text-color);
+                        font-weight: 500;
+                    }}
+                    
+                    .table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 15px 0;
+                        border-radius: var(--border-radius-md);
+                        overflow: hidden;
+                        box-shadow: var(--box-shadow-md);
+                    }}
+                    
+                    .table th {{
+                        background: var(--primary-color);
+                        color: white;
+                        padding: 12px;
+                        text-align: left;
+                        font-weight: 600;
+                        font-size: 14px;
+                    }}
+                    
+                    .table td {{
+                        padding: 12px;
+                        border-bottom: 1px solid var(--border-color);
+                        vertical-align: top;
+                    }}
+                    
+                    .table tr:nth-child(even) {{
+                        background-color: var(--background-color);
+                    }}
+                    
+                    .table tr:hover {{
+                        background-color: var(--primary-color-lighter);
+                    }}
+                    
+                    .badge {{
+                        padding: 4px 12px;
+                        border-radius: 20px;
+                        font-size: 11px;
+                        font-weight: 600;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        display: inline-block;
+                    }}
+                    
+                    .badge-pending {{ background: #fef3c7; color: #92400e; }}
+                    .badge-in-progress {{ background: #dbeafe; color: #1e40af; }}
+                    .badge-completed {{ background: #d1fae5; color: #065f46; }}
+                    .badge-on-hold {{ background: #fee2e2; color: #991b1b; }}
+                    
+                    .summary-box {{
+                        background: linear-gradient(45deg, var(--primary-color-lighter), white);
+                        border: 2px solid var(--primary-color);
+                        border-radius: var(--border-radius-md);
+                        padding: 20px;
+                        margin: 20px 0;
+                    }}
+                    
+                    .summary-grid {{
+                        display: grid;
+                        grid-template-columns: repeat(3, 1fr);
+                        gap: 15px;
+                    }}
+                    
+                    .summary-item {{
+                        text-align: center;
+                        background: white;
+                        padding: 15px;
+                        border-radius: var(--border-radius-md);
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    
+                    .summary-number {{
+                        font-size: 24px;
+                        font-weight: 700;
+                        color: var(--primary-color-darker);
+                        display: block;
+                    }}
+                    
+                    .summary-label {{
+                        font-size: 12px;
+                        color: var(--text-color-light);
+                        text-transform: uppercase;
+                        font-weight: 600;
+                        letter-spacing: 0.5px;
+                    }}
+                    
+                    .instructions-box {{
+                        background: var(--background-color);
+                        border-left: 4px solid var(--primary-color);
+                        padding: 20px;
+                        border-radius: 0 var(--border-radius-md) var(--border-radius-md) 0;
+                        margin: 15px 0;
+                    }}
+                    
+                    .footer {{
+                        background: var(--primary-color-darkest);
+                        color: white;
+                        padding: 20px 30px;
+                        text-align: center;
+                        font-size: 12px;
+                        line-height: 1.4;
+                    }}
+                    
+                    .client-address {{
+                        background: var(--background-color);
+                        border: 2px solid var(--primary-color-lighter);
+                        border-radius: var(--border-radius-md);
+                        padding: 15px;
+                        margin: 15px 0;
+                        font-size: 14px;
+                        line-height: 1.4;
+                    }}
+                    
+                    @media print {{
+                        body {{ 
+                            margin: 0; 
+                            padding: 0; 
+                        }}
+                        .container {{ 
+                            box-shadow: none; 
+                            max-width: 100%;
+                            width: 8.5in;
+                        }}
+                        .table {{ 
+                            break-inside: avoid; 
+                            font-size: 12px;
+                        }}
+                        .section {{ 
+                            break-inside: avoid-page; 
+                        }}
+                        .header {{
+                            padding: 20px 25px;
+                        }}
+                        .content {{
+                            padding: 20px;
+                        }}
+                        @page {{
+                            size: letter;
+                            margin: 0.5in;
+                        }}
+                    }}
+                    
+                    @media screen and (max-width: 768px) {{
+                        .container {{
+                            max-width: 100%;
+                            margin: 0 10px;
+                        }}
+                        .info-grid {{
+                            grid-template-columns: 1fr;
+                            gap: 10px;
+                        }}
+                        .summary-grid {{
+                            grid-template-columns: repeat(2, 1fr);
+                        }}
+                        .header {{
+                            flex-direction: column;
+                            text-align: center;
+                            gap: 15px;
+                        }}
+                        .contact-info {{
+                            text-align: center;
+                        }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <!-- En-tête -->
+                    <div class="header">
+                        <div class="logo-container">
+                            <div class="logo-box">
+                                <div class="logo-text">DG</div>
+                            </div>
+                            <div class="company-info">
+                                <div class="company-name">Desmarais & Gagné inc.</div>
+                                <div class="company-subtitle">Construction résidentiel et commercial</div>
+                            </div>
+                        </div>
+                        <div class="contact-info">
+                            565 rue Maisonneuve<br>
+                            Granby, QC J2G 3H5<br>
+                            Tél.: (450) 372-9630<br>
+                            Téléc.: (450) 372-8122
+                        </div>
+                    </div>
+                    
+                    <!-- Titre du document -->
+                    <div class="document-title">
+                        <h1>📋 DEMANDE DE PRIX</h1>
+                        <div class="document-meta">
+                            <span><strong>N° Demande:</strong> {formulaire.get('numero_document', '')}</span>
+                            <span><strong>Généré le:</strong> {date_creation}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Contenu principal -->
+                    <div class="content">
+                        <!-- Informations générales -->
+                        <div class="section">
+                            <h2 class="section-title">📋 Informations de la Demande</h2>
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <div class="info-label">Fournisseur</div>
+                                    <div class="info-value">{fournisseur.get('nom', 'N/A')}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Statut</div>
+                                    <div class="info-value">
+                                        <span class="badge {statut_badge_class}">
+                                            {formulaire.get('statut', 'BROUILLON')}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Priorité</div>
+                                    <div class="info-value">
+                                        <span class="badge {priorite_badge_class}">
+                                            {formulaire.get('priorite', 'NORMAL')}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Date Création</div>
+                                    <div class="info-value">{pd.to_datetime(formulaire.get('date_creation', datetime.now())).strftime('%d/%m/%Y')}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Date Limite Réponse</div>
+                                    <div class="info-value">{date_echeance if date_echeance else 'N/A'}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Nb Articles</div>
+                                    <div class="info-value">{len(lignes)} article(s)</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Adresse du fournisseur -->
+                        <div class="section">
+                            <h2 class="section-title">📍 Fournisseur</h2>
+                            <div class="client-address">
+                                <strong>{fournisseur.get('nom', 'N/A')}</strong><br>
+                                {fournisseur.get('adresse', 'N/A')}<br>
+                                {fournisseur.get('site_web', '')}<br>
+                                <em>Code fournisseur: {fournisseur.get('code_fournisseur', 'N/A')}</em>
+                            </div>
+                        </div>
+                        
+                        <!-- Résumé -->
+                        <div class="summary-box">
+                            <h3 style="color: var(--primary-color-darker); margin-bottom: 15px; text-align: center;">📋 Résumé de la Demande</h3>
+                            <div class="summary-grid">
+                                <div class="summary-item">
+                                    <span class="summary-number">{len(lignes)}</span>
+                                    <span class="summary-label">Articles à chiffrer</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-number">{formulaire.get('priorite', 'NORMAL')}</span>
+                                    <span class="summary-label">Priorité</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-number">{date_echeance if date_echeance else 'N/A'}</span>
+                                    <span class="summary-label">Échéance</span>
+                                </div>
+                            </div>
+                        </div>
+                
+                        <!-- Détail des articles -->
+                        <div class="section">
+                            <h2 class="section-title">📝 Articles à Chiffrer</h2>
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Description</th>
+                                        <th style="text-align: center;">Quantité</th>
+                                        <th style="text-align: center;">Unité</th>
+                                        <th style="text-align: center;">Prix à Proposer</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {lignes_html}
+                                </tbody>
+                            </table>
+                        </div>
+                
+                        <!-- Notes du devis -->
+                        {notes_section}
+                        
+                        <!-- Source catalogue -->
+                        {source_info}
+                        
+                        <!-- Instructions -->
+                        <div class="instructions-box">
+                            <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">📋 Instructions pour Réponse</h4>
+                            <p><strong>• Merci de chiffrer tous les articles listés ci-dessus</strong></p>
+                            <p><strong>• Indiquer les délais de livraison pour chaque article</strong></p>
+                            <p><strong>• Préciser les conditions de paiement proposées</strong></p>
+                            <p><strong>• Date limite de réponse :</strong> {date_echeance if date_echeance else 'À convenir'}</p>
+                            <p><strong>• Envoyer votre proposition à :</strong> achats@dg-inc.com</p>
+                        </div>
+                        
+                    </div>
+                    
+                    <!-- Pied de page -->
+                    <div class="footer">
+                        <div><strong>🏭 Desmarais & Gagné inc.</strong> - Système de Gestion des Achats</div>
+                        <div>Demande de Prix générée automatiquement le {date_creation}</div>
+                        <div>📞 (450) 372-9630 | 📧 achats@dg-inc.com | 🌐 www.dg-inc.com</div>
+                        <div style="margin-top: 10px; font-size: 11px; opacity: 0.8;">
+                            Merci de mentionner le numéro de demande {formulaire.get('numero_document', '')} dans votre réponse.
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+        """
+    
+    def _get_bon_achat_template(self, formulaire: Dict, fournisseur: Dict, lignes: List[Dict], sous_total: float, tva_montant: float, total_ttc: float, metadonnees: Dict) -> str:
+        """Template HTML pour Bon d'Achat"""
+        
+        # Formatage des dates
+        date_creation = datetime.now().strftime('%d/%m/%Y à %H:%M')
+        date_livraison = ""
+        if formulaire.get('date_echeance'):
+            date_livraison = pd.to_datetime(formulaire['date_echeance']).strftime('%d/%m/%Y')
+        
+        # Badge statut
+        statut_badge_class = {
+            'BROUILLON': 'badge-pending',
+            'VALIDÉ': 'badge-in-progress',
+            'ENVOYÉ': 'badge-completed',
+            'APPROUVÉ': 'badge-completed',
+            'TERMINÉ': 'badge-completed',
+            'ANNULÉ': 'badge-on-hold'
+        }.get(formulaire.get('statut', 'BROUILLON'), 'badge-pending')
+        
+        # Badge priorité
+        priorite_badge_class = {
+            'NORMAL': 'badge-in-progress',
+            'URGENT': 'badge-pending',
+            'CRITIQUE': 'badge-on-hold'
+        }.get(formulaire.get('priorite', 'NORMAL'), 'badge-in-progress')
+        
+        # Génération des lignes de produits
+        lignes_html = ""
+        for ligne in lignes:
+            is_from_catalog = metadonnees.get('source_catalog', False)
+            source_icon = "🔗" if is_from_catalog else "📝"
+            montant_ligne = ligne.get('quantite', 0) * ligne.get('prix_unitaire', 0)
+            
+            lignes_html += f"""
+                <tr>
+                    <td><strong>{source_icon} {ligne.get('description', '')}</strong>
+                        {f"<br><small>Code: {ligne.get('code_article', '')}</small>" if ligne.get('code_article') else ""}
+                        {f"<br><em>{ligne.get('notes_ligne', '')}</em>" if ligne.get('notes_ligne') else ""}
+                    </td>
+                    <td style="text-align: center;">{ligne.get('quantite', 0)}</td>
+                    <td style="text-align: center;">{ligne.get('unite', 'UN')}</td>
+                    <td style="text-align: right;">{ligne.get('prix_unitaire', 0):.2f} $</td>
+                    <td style="text-align: right;"><strong>{montant_ligne:.2f} $</strong></td>
+                </tr>
+            """
+        
+        # Informations source catalogue
+        source_info = ""
+        if metadonnees.get('source_catalog'):
+            nb_catalog = metadonnees.get('nb_produits_catalog', 0)
+            nb_manuels = metadonnees.get('nb_produits_manuels', 0)
+            source_info = f"""
+                <div class="instructions-box">
+                    <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">🔗 Source des Produits</h4>
+                    <p><strong>• Produits du catalogue :</strong> {nb_catalog}</p>
+                    <p><strong>• Produits saisis manuellement :</strong> {nb_manuels}</p>
+                    <p><em>Cette commande utilise notre catalogue produits intégré pour une gestion optimisée.</em></p>
+                </div>
+            """
+        
+        # Notes du formulaire
+        notes_section = ""
+        if formulaire.get('notes'):
+            notes_section = f"""
+                <div class="instructions-box">
+                    <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">📝 Instructions de Livraison</h4>
+                    <p>{formulaire['notes']}</p>
+                </div>
+            """
+        
+        return f"""
+            <!DOCTYPE html>
+            <html lang="fr">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>Bon d'Achat - {formulaire.get('numero_document', '')}</title>
+                <style>
+                    :root {{
+                        --primary-color: #00A971;
+                        --primary-color-darker: #00673D;
+                        --primary-color-darkest: #004C2E;
+                        --primary-color-lighter: #DCFCE7;
+                        --background-color: #F9FAFB;
+                        --secondary-background-color: #FFFFFF;
+                        --text-color: #374151;
+                        --text-color-light: #6B7280;
+                        --border-color: #E5E7EB;
+                        --border-radius-md: 0.5rem;
+                        --box-shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+                    }}
+                    
+                    * {{
+                        margin: 0;
+                        padding: 0;
+                        box-sizing: border-box;
+                    }}
+                    
+                    body {{
+                        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                        line-height: 1.6;
+                        color: var(--text-color);
+                        background-color: var(--background-color);
+                        margin: 0;
+                        padding: 15px;
+                    }}
+                    
+                    .container {{
+                        max-width: 8.5in;
+                        margin: 0 auto;
+                        background-color: white;
+                        border-radius: 12px;
+                        box-shadow: var(--box-shadow-md);
+                        overflow: hidden;
+                        width: 100%;
+                    }}
+                    
+                    .header {{
+                        background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-color-darker) 100%);
+                        color: white;
+                        padding: 30px;
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                    }}
+                    
+                    .logo-container {{
+                        display: flex;
+                        align-items: center;
+                        gap: 20px;
+                    }}
+                    
+                    .logo-box {{
+                        background-color: white;
+                        width: 70px;
+                        height: 45px;
+                        border-radius: 8px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+                    }}
+                    
+                    .logo-text {{
+                        font-family: 'Segoe UI', sans-serif;
+                        font-weight: 800;
+                        font-size: 24px;
+                        color: var(--primary-color);
+                        letter-spacing: 1px;
+                    }}
+                    
+                    .company-info {{
+                        text-align: left;
+                    }}
+                    
+                    .company-name {{
+                        font-weight: 700;
+                        font-size: 28px;
+                        margin-bottom: 5px;
+                        text-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+                    }}
+                    
+                    .company-subtitle {{
+                        font-size: 16px;
+                        opacity: 0.9;
+                    }}
+                    
+                    .contact-info {{
+                        text-align: right;
+                        font-size: 14px;
+                        line-height: 1.4;
+                        opacity: 0.95;
+                    }}
+                    
+                    .document-title {{
+                        background: var(--primary-color-lighter);
+                        padding: 20px 30px;
+                        border-left: 5px solid var(--primary-color);
+                    }}
+                    
+                    .document-title h1 {{
+                        color: var(--primary-color-darker);
+                        font-size: 24px;
+                        margin-bottom: 10px;
+                    }}
+                    
+                    .document-meta {{
+                        display: flex;
+                        justify-content: space-between;
+                        color: var(--text-color-light);
+                        font-size: 14px;
+                    }}
+                    
+                    .content {{
+                        padding: 25px;
+                    }}
+                    
+                    .section {{
+                        margin-bottom: 30px;
+                    }}
+                    
+                    .section-title {{
+                        color: var(--primary-color-darker);
+                        font-size: 18px;
+                        font-weight: 600;
+                        margin-bottom: 15px;
+                        padding-bottom: 8px;
+                        border-bottom: 2px solid var(--primary-color-lighter);
+                        display: flex;
+                        align-items: center;
+                        gap: 10px;
+                    }}
+                    
+                    .info-grid {{
+                        display: grid;
+                        grid-template-columns: 1fr 1fr 1fr;
+                        gap: 15px;
+                        margin-bottom: 20px;
+                    }}
+                    
+                    .info-item {{
+                        background: var(--background-color);
+                        padding: 15px;
+                        border-radius: var(--border-radius-md);
+                        border-left: 3px solid var(--primary-color);
+                    }}
+                    
+                    .info-label {{
+                        font-weight: 600;
+                        color: var(--text-color-light);
+                        font-size: 12px;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        margin-bottom: 5px;
+                    }}
+                    
+                    .info-value {{
+                        font-size: 16px;
+                        color: var(--text-color);
+                        font-weight: 500;
+                    }}
+                    
+                    .table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin: 15px 0;
+                        border-radius: var(--border-radius-md);
+                        overflow: hidden;
+                        box-shadow: var(--box-shadow-md);
+                    }}
+                    
+                    .table th {{
+                        background: var(--primary-color);
+                        color: white;
+                        padding: 12px;
+                        text-align: left;
+                        font-weight: 600;
+                        font-size: 14px;
+                    }}
+                    
+                    .table td {{
+                        padding: 12px;
+                        border-bottom: 1px solid var(--border-color);
+                        vertical-align: top;
+                    }}
+                    
+                    .table tr:nth-child(even) {{
+                        background-color: var(--background-color);
+                    }}
+                    
+                    .table tr:hover {{
+                        background-color: var(--primary-color-lighter);
+                    }}
+                    
+                    .badge {{
+                        padding: 4px 12px;
+                        border-radius: 20px;
+                        font-size: 11px;
+                        font-weight: 600;
+                        text-transform: uppercase;
+                        letter-spacing: 0.5px;
+                        display: inline-block;
+                    }}
+                    
+                    .badge-pending {{ background: #fef3c7; color: #92400e; }}
+                    .badge-in-progress {{ background: #dbeafe; color: #1e40af; }}
+                    .badge-completed {{ background: #d1fae5; color: #065f46; }}
+                    .badge-on-hold {{ background: #fee2e2; color: #991b1b; }}
+                    
+                    .summary-box {{
+                        background: linear-gradient(45deg, var(--primary-color-lighter), white);
+                        border: 2px solid var(--primary-color);
+                        border-radius: var(--border-radius-md);
+                        padding: 20px;
+                        margin: 20px 0;
+                    }}
+                    
+                    .summary-grid {{
+                        display: grid;
+                        grid-template-columns: repeat(4, 1fr);
+                        gap: 15px;
+                    }}
+                    
+                    .summary-item {{
+                        text-align: center;
+                        background: white;
+                        padding: 15px;
+                        border-radius: var(--border-radius-md);
+                        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    }}
+                    
+                    .summary-number {{
+                        font-size: 24px;
+                        font-weight: 700;
+                        color: var(--primary-color-darker);
+                        display: block;
+                    }}
+                    
+                    .summary-label {{
+                        font-size: 12px;
+                        color: var(--text-color-light);
+                        text-transform: uppercase;
+                        font-weight: 600;
+                        letter-spacing: 0.5px;
+                    }}
+                    
+                    .instructions-box {{
+                        background: var(--background-color);
+                        border-left: 4px solid var(--primary-color);
+                        padding: 20px;
+                        border-radius: 0 var(--border-radius-md) var(--border-radius-md) 0;
+                        margin: 15px 0;
+                    }}
+                    
+                    .footer {{
+                        background: var(--primary-color-darkest);
+                        color: white;
+                        padding: 20px 30px;
+                        text-align: center;
+                        font-size: 12px;
+                        line-height: 1.4;
+                    }}
+                    
+                    .client-address {{
+                        background: var(--background-color);
+                        border: 2px solid var(--primary-color-lighter);
+                        border-radius: var(--border-radius-md);
+                        padding: 15px;
+                        margin: 15px 0;
+                        font-size: 14px;
+                        line-height: 1.4;
+                    }}
+                    
+                    @media print {{
+                        body {{ 
+                            margin: 0; 
+                            padding: 0; 
+                        }}
+                        .container {{ 
+                            box-shadow: none; 
+                            max-width: 100%;
+                            width: 8.5in;
+                        }}
+                        .table {{ 
+                            break-inside: avoid; 
+                            font-size: 12px;
+                        }}
+                        .section {{ 
+                            break-inside: avoid-page; 
+                        }}
+                        .header {{
+                            padding: 20px 25px;
+                        }}
+                        .content {{
+                            padding: 20px;
+                        }}
+                        @page {{
+                            size: letter;
+                            margin: 0.5in;
+                        }}
+                    }}
+                    
+                    @media screen and (max-width: 768px) {{
+                        .container {{
+                            max-width: 100%;
+                            margin: 0 10px;
+                        }}
+                        .info-grid {{
+                            grid-template-columns: 1fr;
+                            gap: 10px;
+                        }}
+                        .summary-grid {{
+                            grid-template-columns: repeat(2, 1fr);
+                        }}
+                        .header {{
+                            flex-direction: column;
+                            text-align: center;
+                            gap: 15px;
+                        }}
+                        .contact-info {{
+                            text-align: center;
+                        }}
+                    }}
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <!-- En-tête -->
+                    <div class="header">
+                        <div class="logo-container">
+                            <div class="logo-box">
+                                <div class="logo-text">DG</div>
+                            </div>
+                            <div class="company-info">
+                                <div class="company-name">Desmarais & Gagné inc.</div>
+                                <div class="company-subtitle">Construction résidentiel et commercial</div>
+                            </div>
+                        </div>
+                        <div class="contact-info">
+                            565 rue Maisonneuve<br>
+                            Granby, QC J2G 3H5<br>
+                            Tél.: (450) 372-9630<br>
+                            Téléc.: (450) 372-8122
+                        </div>
+                    </div>
+                    
+                    <!-- Titre du document -->
+                    <div class="document-title">
+                        <h1>🛒 BON D'ACHAT</h1>
+                        <div class="document-meta">
+                            <span><strong>N° Bon d'Achat:</strong> {formulaire.get('numero_document', '')}</span>
+                            <span><strong>Généré le:</strong> {date_creation}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Contenu principal -->
+                    <div class="content">
+                        <!-- Informations générales -->
+                        <div class="section">
+                            <h2 class="section-title">📋 Informations du Bon d'Achat</h2>
+                            <div class="info-grid">
+                                <div class="info-item">
+                                    <div class="info-label">Fournisseur</div>
+                                    <div class="info-value">{fournisseur.get('nom', 'N/A')}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Statut</div>
+                                    <div class="info-value">
+                                        <span class="badge {statut_badge_class}">
+                                            {formulaire.get('statut', 'BROUILLON')}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Priorité</div>
+                                    <div class="info-value">
+                                        <span class="badge {priorite_badge_class}">
+                                            {formulaire.get('priorite', 'NORMAL')}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Date Création</div>
+                                    <div class="info-value">{pd.to_datetime(formulaire.get('date_creation', datetime.now())).strftime('%d/%m/%Y')}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Date Livraison Souhaitée</div>
+                                    <div class="info-value">{date_livraison if date_livraison else 'N/A'}</div>
+                                </div>
+                                <div class="info-item">
+                                    <div class="info-label">Délai Fournisseur</div>
+                                    <div class="info-value">{fournisseur.get('delai_livraison_moyen', 'N/A')} jours</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Adresse du fournisseur -->
+                        <div class="section">
+                            <h2 class="section-title">📍 Fournisseur</h2>
+                            <div class="client-address">
+                                <strong>{fournisseur.get('nom', 'N/A')}</strong><br>
+                                {fournisseur.get('adresse', 'N/A')}<br>
+                                {fournisseur.get('site_web', '')}<br>
+                                <em>Code fournisseur: {fournisseur.get('code_fournisseur', 'N/A')}</em><br>
+                                <em>Contact commercial: {fournisseur.get('contact_commercial', 'N/A')}</em>
+                            </div>
+                        </div>
+                        
+                        <!-- Résumé financier -->
+                        <div class="summary-box">
+                            <h3 style="color: var(--primary-color-darker); margin-bottom: 15px; text-align: center;">💰 Résumé Financier</h3>
+                            <div class="summary-grid">
+                                <div class="summary-item">
+                                    <span class="summary-number">{len(lignes)}</span>
+                                    <span class="summary-label">Articles</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-number">{sous_total:,.2f} $</span>
+                                    <span class="summary-label">Total HT</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-number">{tva_montant:,.2f} $</span>
+                                    <span class="summary-label">TVA (14.975%)</span>
+                                </div>
+                                <div class="summary-item">
+                                    <span class="summary-number">{total_ttc:,.2f} $</span>
+                                    <span class="summary-label">Total TTC</span>
+                                </div>
+                            </div>
+                        </div>
+                
+                        <!-- Détail des articles -->
+                        <div class="section">
+                            <h2 class="section-title">📝 Détail des Articles Commandés</h2>
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>Description</th>
+                                        <th style="text-align: center;">Quantité</th>
+                                        <th style="text-align: center;">Unité</th>
+                                        <th style="text-align: right;">Prix Unit.</th>
+                                        <th style="text-align: right;">Montant</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {lignes_html}
+                                    <!-- Ligne de total -->
+                                    <tr style="background: var(--primary-color-lighter); font-weight: bold;">
+                                        <td colspan="4" style="text-align: right; padding: 15px;"><strong>SOUS-TOTAL (HT)</strong></td>
+                                        <td style="text-align: right; padding: 15px;"><strong>{sous_total:,.2f} $ CAD</strong></td>
+                                    </tr>
+                                    <tr style="background: var(--background-color);">
+                                        <td colspan="4" style="text-align: right; padding: 10px;">TVA (14.975%)</td>
+                                        <td style="text-align: right; padding: 10px;">{tva_montant:,.2f} $ CAD</td>
+                                    </tr>
+                                    <tr style="background: var(--primary-color); color: white; font-weight: bold; font-size: 16px;">
+                                        <td colspan="4" style="text-align: right; padding: 15px;"><strong>TOTAL TTC</strong></td>
+                                        <td style="text-align: right; padding: 15px;"><strong>{total_ttc:,.2f} $ CAD</strong></td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                
+                        <!-- Notes du bon d'achat -->
+                        {notes_section}
+                        
+                        <!-- Source catalogue -->
+                        {source_info}
+                        
+                        <!-- Conditions -->
+                        <div class="instructions-box">
+                            <h4 style="color: var(--primary-color-darker); margin-bottom: 10px;">💰 Conditions de Commande</h4>
+                            <p><strong>• Conditions de paiement :</strong> {fournisseur.get('conditions_paiement', '30 jours net')}</p>
+                            <p><strong>• Délai de livraison :</strong> {fournisseur.get('delai_livraison_moyen', 'À convenir')} jours</p>
+                            <p><strong>• Date de livraison souhaitée :</strong> {date_livraison if date_livraison else 'À convenir'}</p>
+                            <p><strong>• Lieu de livraison :</strong> 565 rue Maisonneuve, Granby, QC J2G 3H5</p>
+                            <p><strong>• Prix :</strong> Les prix sont exprimés en dollars canadiens (CAD) et incluent les taxes applicables</p>
+                        </div>
+                        
+                    </div>
+                    
+                    <!-- Pied de page -->
+                    <div class="footer">
+                        <div><strong>🏭 Desmarais & Gagné inc.</strong> - Système de Gestion des Achats</div>
+                        <div>Bon d'Achat généré automatiquement le {date_creation}</div>
+                        <div>📞 (450) 372-9630 | 📧 achats@dg-inc.com | 🌐 www.dg-inc.com</div>
+                        <div style="margin-top: 10px; font-size: 11px; opacity: 0.8;">
+                            Merci de mentionner le numéro de bon d'achat {formulaire.get('numero_document', '')} lors de la livraison.
+                        </div>
+                    </div>
+                </div>
+            </body>
+            </html>
+        """
+    
+    def export_formulaire_to_html_file(self, formulaire_id: int, type_formulaire: str) -> str:
+        """Exporte un formulaire vers un fichier HTML temporaire"""
+        try:
+            # Générer le contenu HTML
+            if type_formulaire == 'DEMANDE_PRIX':
+                html_content = self.generate_demande_prix_html(formulaire_id)
+                prefix = "demande_prix_"
+            elif type_formulaire == 'BON_ACHAT':
+                html_content = self.generate_bon_achat_html(formulaire_id)
+                prefix = "bon_achat_"
+            else:
+                st.error(f"Type de formulaire non supporté: {type_formulaire}")
+                return ""
+            
+            if not html_content:
+                st.error("Impossible de générer le contenu HTML")
+                return ""
+            
+            # Récupérer le numéro de document pour le nom du fichier
+            formulaire = self.get_formulaire_details_with_lines(formulaire_id)
+            numero_document = formulaire.get('numero_document', f'DOC_{formulaire_id}')
+            
+            # Créer un fichier temporaire
+            temp_dir = tempfile.gettempdir()
+            filename = f"{prefix}{numero_document}.html"
+            filepath = os.path.join(temp_dir, filename)
+            
+            # Écrire le contenu HTML
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(html_content)
+            
+            return filepath
+            
+        except Exception as e:
+            st.error(f"Erreur export HTML: {e}")
+            return ""
+
+def show_fournisseurs_page():
+    """Page principale du module Fournisseurs - VERSION INTÉGRÉE PRODUITS"""
+    st.markdown("## 🏪 Gestion des Achats")
+    
+    # 1. Récupérer le gestionnaire (au lieu de le créer ici)
+    if 'gestionnaire_fournisseurs' not in st.session_state:
+        st.error("Erreur critique : Le gestionnaire de fournisseurs n'a pas été initialisé.")
+        st.info("Veuillez vous assurer que le système ERP est correctement démarré.")
+        return # Arrêter l'exécution de la page si le gestionnaire est manquant
+    
+    gestionnaire = st.session_state.gestionnaire_fournisseurs
+    
+    # 2. Le reste de votre code reste identique...
+    # Afficher un indicateur de statut du module Produits
+    if gestionnaire.product_manager:
+        st.success("✅ Module Produits connecté - Catalogue produits disponible")
+    else:
+        st.warning("⚠️ Module Produits non disponible - Fonctionnalités produits limitées")
+    
+    # Variables de session
+    if 'fournisseur_action' not in st.session_state:
+        st.session_state.fournisseur_action = None
+    if 'selected_fournisseur_id' not in st.session_state:
+        st.session_state.selected_fournisseur_id = None
+    if 'fournisseur_filter_category' not in st.session_state:
+        st.session_state.fournisseur_filter_category = 'TOUS'
+    if 'form_lines_data' not in st.session_state:
+        st.session_state.form_lines_data = []
+    
+    # Onglets simplifiés
+    tab_dashboard, tab_liste, tab_performance, tab_categories, tab_demande_prix, tab_bon_achat = st.tabs([
+        "📊 Dashboard", "📋 Liste Fournisseurs", "📈 Performances", 
+        "🏷️ Catégories", "📋 Demande de Prix", "🛒 Bon d'Achat"
+    ])
+    
+    with tab_dashboard:
+        render_fournisseurs_dashboard(gestionnaire)
+    
+    with tab_liste:
+        render_fournisseurs_liste(gestionnaire)
+    
+    with tab_performance:
+        render_fournisseurs_performance(gestionnaire)
+    
+    with tab_categories:
+        render_fournisseurs_categories(gestionnaire)
+    
+    with tab_demande_prix:
+        render_demande_prix_tab(gestionnaire)
+    
+    with tab_bon_achat:
+        render_bon_achat_tab(gestionnaire)
+    
+    # Formulaires modaux existants
+    action = st.session_state.get('fournisseur_action')
+    selected_id = st.session_state.get('selected_fournisseur_id')
+    
+    if action == "create_fournisseur":
+        render_fournisseur_form(gestionnaire, fournisseur_data=None)
+    elif action == "edit_fournisseur" and selected_id:
+        fournisseur_data = gestionnaire.get_fournisseur_by_id(selected_id)
+        render_fournisseur_form(gestionnaire, fournisseur_data=fournisseur_data)
+    elif action == "view_fournisseur_details" and selected_id:
+        fournisseur_data = gestionnaire.get_fournisseur_by_id(selected_id)
+        render_fournisseur_details(gestionnaire, fournisseur_data)
+
+# =========================================================================
+# ONGLETS POUR FORMULAIRES DEMANDE DE PRIX ET BON D'ACHAT - VERSION PRODUITS
+# =========================================================================
+
+def render_demande_prix_tab(gestionnaire):
+    """Onglet pour gestion des Demandes de Prix"""
+    st.markdown("### 📋 Demandes de Prix (DP)")
+    
+    # Sous-onglets pour organiser
+    sub_tab_create, sub_tab_list, sub_tab_view = st.tabs([
+        "➕ Nouvelle Demande", "📋 Liste des DP", "👁️ Consulter DP"
+    ])
+    
+    with sub_tab_create:
+        render_create_demande_prix_form(gestionnaire)
+    
+    with sub_tab_list:
+        render_list_demandes_prix(gestionnaire)
+    
+    with sub_tab_view:
+        render_view_demande_prix(gestionnaire)
+
+def render_bon_achat_tab(gestionnaire):
+    """Onglet pour gestion des Bons d'Achat"""
+    st.markdown("### 🛒 Bons d'Achat (BA)")
+    
+    # Sous-onglets pour organiser
+    sub_tab_create, sub_tab_list, sub_tab_view = st.tabs([
+        "➕ Nouveau Bon d'Achat", "📋 Liste des BA", "👁️ Consulter BA"
+    ])
+    
+    with sub_tab_create:
+        render_create_bon_achat_form(gestionnaire)
+    
+    with sub_tab_list:
+        render_list_bons_achat(gestionnaire)
+    
+    with sub_tab_view:
+        render_view_bon_achat(gestionnaire)
+
+def render_create_demande_prix_form(gestionnaire):
+    """Formulaire de création de Demande de Prix - VERSION PRODUITS INTÉGRÉE"""
+    st.markdown("#### ➕ Nouvelle Demande de Prix")
+    
+    # Vérification des fournisseurs
+    fournisseurs = gestionnaire.get_all_fournisseurs()
+    
+    if not fournisseurs:
+        st.warning("⚠️ Aucun fournisseur disponible.")
+        st.info("💡 Créez d'abord un fournisseur dans l'onglet 'Liste Fournisseurs' pour pouvoir créer une demande de prix.")
+        
+        if st.button("➕ Aller créer un fournisseur", use_container_width=True, key="dp_goto_create_fournisseur"):
+            st.session_state.fournisseur_action = "create_fournisseur"
+            st.rerun()
+        return
+    
+    # Vérification du module Produits
+    if not gestionnaire.product_manager:
+        st.error("⚠️ Module Produits non disponible. Impossible d'accéder au catalogue produits.")
+        st.info("💡 Activez le module Produits pour utiliser le catalogue produits intégré.")
+        return
+    
+    # Initialiser les lignes si nécessaire
+    if 'dp_lines' not in st.session_state:
+        st.session_state.dp_lines = []
+    
+    # Section pour ajouter des articles du catalogue (HORS du formulaire)
+    st.markdown("#### 📦 Articles à chiffrer (Catalogue Produits)")
+    
+    with st.expander("➕ Ajouter un produit du catalogue", expanded=len(st.session_state.dp_lines) == 0):
+        add_col1, add_col2, add_col3 = st.columns(3)
+        
+        with add_col1:
+            # Recherche dans le catalogue produits
+            search_term = st.text_input("🔍 Rechercher produit:", key="dp_search_produit_catalog")
+            produits_catalog = gestionnaire.get_produits_crm_for_selection(search_term)
+            
+            if produits_catalog:
+                selected_produit = st.selectbox(
+                    "Produit du catalogue:",
+                    options=[None] + produits_catalog,
+                    format_func=lambda x: "-- Sélectionner --" if x is None else f"{x.get('code_produit', '')} - {x.get('nom', '')} ({x.get('materiau', '')}/{x.get('nuance', '')})",
+                    key="dp_selected_produit_catalog"
+                )
+            else:
+                selected_produit = None
+                if search_term:
+                    st.info("Aucun produit trouvé")
+                else:
+                    st.info("Tapez pour rechercher des produits")
+            
+            # Pré-remplir avec les données du produit du catalogue
+            description_article = st.text_input(
+                "Description:",
+                value=f"{selected_produit.get('code_produit', '')} - {selected_produit.get('nom', '')}" if selected_produit else '',
+                key="dp_description_catalog"
+            )
+        
+        with add_col2:
+            code_article = st.text_input(
+                "Code produit:",
+                value=selected_produit.get('code_produit', '') if selected_produit else '',
+                key="dp_code_catalog"
+            )
+            
+            # Unités de mesure construction Québec
+            unite_defaut = selected_produit.get('unite_vente', 'unité') if selected_produit else 'unité'
+            unite_options = [
+                # Unités de quantité
+                'unité', 'pièce', 'ensemble', 'lot',
+                # Unités linéaires
+                'm', 'pi', 'po', 'pi linéaire',
+                # Unités de surface  
+                'm²', 'pi²', 'pi carré',
+                # Unités de volume
+                'm³', 'pi³', 'vg³', 'litre', 'gallon',
+                # Unités de poids
+                'kg', 'lb', 'tonne', 'tonne métrique',
+                # Emballages construction
+                'sac', 'boîte', 'caisse', 'palette', 'rouleau', 'feuille',
+                # Temps
+                'heure', 'jour', 'semaine',
+                # Spéciaux construction
+                'mètre carré', 'pied carré', 'mètre cube', 'verge cube'
+            ]
+            if unite_defaut not in unite_options:
+                unite_options.insert(0, unite_defaut)
+            
+            unite = st.selectbox(
+                "Unité:",
+                options=unite_options,
+                index=unite_options.index(unite_defaut),
+                key="dp_unite_catalog"
+            )
+        
+        with add_col3:
+            quantite = st.number_input(
+                "Quantité:",
+                min_value=0.01,
+                value=1.0,
+                step=0.01,
+                key="dp_quantite_catalog"
+            )
+            
+            # Afficher les infos du produit du catalogue
+            if selected_produit:
+                st.info(f"💰 Prix catalogue: {selected_produit.get('prix_unitaire', 0):.2f} $ / {selected_produit.get('unite_vente', 'UN')}")
+                if selected_produit.get('description'):
+                    st.caption(f"📝 {selected_produit['description']}")
+                if selected_produit.get('stock_disponible'):
+                    stock = selected_produit['stock_disponible']
+                    st.caption(f"📦 Stock: {stock} {selected_produit.get('unite_vente', 'UN')}")
+            
+            notes_ligne = st.text_input(
+                "Notes ligne:",
+                key="dp_notes_ligne_catalog"
+            )
+        
+        if st.button("➕ Ajouter à la demande", use_container_width=True, key="dp_add_line_catalog"):
+            if description_article and quantite > 0:
+                nouvelle_ligne = {
+                    'description': description_article,
+                    'code_article': code_article,
+                    'quantite': quantite,
+                    'unite': unite,
+                    'notes_ligne': notes_ligne,
+                    # Métadonnées du catalogue pour référence
+                    'produit_crm_id': selected_produit.get('id') if selected_produit else None,
+                    'prix_unitaire_crm': selected_produit.get('prix_unitaire', 0) if selected_produit else 0,
+                    'stock_disponible_crm': selected_produit.get('stock_disponible', 0) if selected_produit else 0
+                }
+                st.session_state.dp_lines.append(nouvelle_ligne)
+                st.success("✅ Produit ajouté à la demande !")
+                st.rerun()
+            else:
+                st.error("Description et quantité sont obligatoires.")
+    
+    # Section pour ajout manuel (pour les produits non catalogués)
+    with st.expander("✏️ Ajouter un article manuel (non catalogué)", expanded=False):
+        manual_col1, manual_col2, manual_col3 = st.columns(3)
+        
+        with manual_col1:
+            description_manual = st.text_input("Description manuelle:", key="dp_desc_manual")
+            code_manual = st.text_input("Code article:", key="dp_code_manual")
+        
+        with manual_col2:
+            quantite_manual = st.number_input("Quantité:", min_value=0.01, value=1.0, step=0.01, key="dp_qty_manual")
+            unite_manual = st.selectbox("Unité:", options=['UN', 'M', 'M²', 'M³', 'KG', 'L', 'H', 'T'], key="dp_unit_manual")
+        
+        with manual_col3:
+            notes_manual = st.text_input("Notes:", key="dp_notes_manual")
+        
+        if st.button("➕ Ajouter article manuel", use_container_width=True, key="dp_add_manual"):
+            if description_manual and quantite_manual > 0:
+                nouvelle_ligne_manual = {
+                    'description': description_manual,
+                    'code_article': code_manual,
+                    'quantite': quantite_manual,
+                    'unite': unite_manual,
+                    'notes_ligne': notes_manual,
+                    'produit_crm_id': None,  # Pas de lien catalogue
+                    'prix_unitaire_crm': 0,
+                    'stock_disponible_crm': 0
+                }
+                st.session_state.dp_lines.append(nouvelle_ligne_manual)
+                st.success("✅ Article manuel ajouté !")
+                st.rerun()
+            else:
+                st.error("Description et quantité sont obligatoires.")
+    
+    # Affichage des lignes ajoutées (HORS du formulaire)
+    if st.session_state.dp_lines:
+        st.markdown("**Articles dans la demande:**")
+        
+        for i, ligne in enumerate(st.session_state.dp_lines):
+            with st.container():
+                col_desc, col_qty, col_info, col_action = st.columns([3, 1, 1, 1])
+                
+                with col_desc:
+                    is_from_catalog = ligne.get('produit_crm_id') is not None
+                    icon = "🔗" if is_from_catalog else "✏️"
+                    st.markdown(f"{icon} **{ligne['description']}** ({ligne['code_article']})")
+                    if ligne['notes_ligne']:
+                        st.caption(f"📝 {ligne['notes_ligne']}")
+                
+                with col_qty:
+                    st.markdown(f"{ligne['quantite']} {ligne['unite']}")
+                
+                with col_info:
+                    if is_from_catalog:
+                        prix_catalog = ligne.get('prix_unitaire_crm', 0)
+                        if prix_catalog > 0:
+                            st.caption(f"💰 {prix_catalog:.2f} $ catalogue")
+                        stock_catalog = ligne.get('stock_disponible_crm', 0)
+                        if stock_catalog > 0:
+                            st.caption(f"📦 Stock: {stock_catalog}")
+                    else:
+                        st.caption("Manuel")
+                
+                with col_action:
+                    if st.button("🗑️", key=f"dp_remove_{i}", help="Supprimer cette ligne"):
+                        st.session_state.dp_lines.pop(i)
+                        st.rerun()
+    else:
+        st.info("Aucun article ajouté. Ajoutez au moins un article pour créer la demande.")
+    
+    # Actions rapides pour vider la liste
+    if st.session_state.dp_lines:
+        if st.button("🗑️ Vider tous les articles", key="dp_clear_all"):
+            st.session_state.dp_lines = []
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Formulaire principal (SANS la gestion des lignes)
+    with st.form("demande_prix_form", clear_on_submit=False):
+        st.markdown("#### 📋 Informations de la Demande")
+        
+        # En-tête du formulaire
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Pré-sélection si définie depuis un autre onglet
+            preselected_id = st.session_state.get('preselected_fournisseur_id')
+            default_index = 0
+            
+            if preselected_id:
+                for i, f in enumerate(fournisseurs):
+                    if f.get('id') == preselected_id:
+                        default_index = i
+                        break
+                # Réinitialiser après utilisation
+                if 'preselected_fournisseur_id' in st.session_state:
+                    del st.session_state.preselected_fournisseur_id
+            
+            selected_fournisseur = st.selectbox(
+                "Fournisseur *:",
+                options=fournisseurs,
+                format_func=lambda f: f.get('nom', 'N/A'),
+                index=default_index,
+                help="Sélectionnez le fournisseur pour la demande de prix"
+            )
+            
+            priorite = st.selectbox(
+                "Priorité:",
+                options=['NORMAL', 'URGENT', 'CRITIQUE'],
+                index=0
+            )
+        
+        with col2:
+            numero_dp = gestionnaire.generate_document_number('DEMANDE_PRIX')
+            st.text_input("Numéro DP:", value=numero_dp, disabled=True)
+            
+            date_echeance = st.date_input(
+                "Date limite réponse:",
+                value=datetime.now().date() + timedelta(days=7),
+                help="Date limite pour la réponse du fournisseur"
+            )
+        
+        # Section construction spécialisée
+        st.markdown("#### 🏗️ Spécifications Construction")
+        
+        # Informations spécifiques construction
+        info_col1, info_col2 = st.columns(2)
+        
+        with info_col1:
+            delai_livraison = st.selectbox(
+                "Délai de livraison souhaité:",
+                ["Immédiat", "24-48h", "1 semaine", "2 semaines", "1 mois", "À convenir"],
+                index=2
+            )
+            
+            lieu_livraison = st.text_input(
+                "Lieu de livraison:",
+                placeholder="Adresse du chantier ou entrepôt"
+            )
+        
+        with info_col2:
+            conditions_livraison = st.selectbox(
+                "Conditions de livraison:",
+                ["Franco chantier", "Départ usine", "Rendu sur site", "À convenir"],
+                index=0
+            )
+            
+            installation_requise = st.checkbox("Installation/pose incluse", value=False)
+        
+        # Spécifications techniques
+        specifications_techniques = st.text_area(
+            "Spécifications techniques:",
+            placeholder="Ex: Conformité CSA A23.1, Résistance 25 MPa, Certification LEED...",
+            help="Normes et spécifications techniques requises"
+        )
+        
+        # Notes générales
+        notes = st.text_area(
+            "Notes / Instructions additionnelles:",
+            placeholder="Instructions spéciales, conditions particulières, garanties requises...",
+            help="Notes qui apparaîtront sur la demande de prix"
+        )
+        
+        # Boutons de soumission
+        st.markdown("---")
+        submit_col1, submit_col2 = st.columns(2)
+        
+        with submit_col1:
+            submitted = st.form_submit_button("📋 Créer Demande de Prix", use_container_width=True)
+        
+        with submit_col2:
+            save_draft = st.form_submit_button("💾 Sauver Brouillon", use_container_width=True)
+        
+        # Traitement du formulaire
+        if (submitted or save_draft):
+            if not st.session_state.dp_lines:
+                st.error("❌ Ajoutez au moins un article avant de créer la demande.")
+            else:
+                # Vérification de la validité du fournisseur sélectionné
+                if not selected_fournisseur or 'company_id' not in selected_fournisseur:
+                    st.error("❌ Erreur avec le fournisseur sélectionné. Veuillez réessayer.")
+                    st.rerun()
+                    return
+                
+                # Compter les produits catalogue vs manuels
+                produits_catalog = [l for l in st.session_state.dp_lines if l.get('produit_crm_id')]
+                produits_manuels = [l for l in st.session_state.dp_lines if not l.get('produit_crm_id')]
+                
+                # Construire les notes complètes avec spécifications construction
+                notes_completes = []
+                if specifications_techniques:
+                    notes_completes.append(f"SPÉCIFICATIONS TECHNIQUES:\n{specifications_techniques}")
+                if lieu_livraison:
+                    notes_completes.append(f"LIVRAISON: {lieu_livraison} ({conditions_livraison})")
+                if delai_livraison != "À convenir":
+                    notes_completes.append(f"DÉLAI: {delai_livraison}")
+                if installation_requise:
+                    notes_completes.append("INSTALLATION/POSE INCLUSE REQUISE")
+                if notes:
+                    notes_completes.append(f"NOTES ADDITIONNELLES:\n{notes}")
+                
+                notes_finales = "\n\n".join(notes_completes)
+                
+                formulaire_data = {
+                    'type_formulaire': 'DEMANDE_PRIX',
+                    'numero_document': numero_dp,
+                    'company_id': selected_fournisseur['company_id'],
+                    'employee_id': None,  # À adapter selon l'utilisateur connecté
+                    'statut': 'VALIDÉ' if submitted else 'BROUILLON',
+                    'priorite': priorite,
+                    'date_echeance': date_echeance.isoformat(),
+                    'notes': notes_finales,
+                    'metadonnees_json': json.dumps({
+                        'fournisseur_nom': selected_fournisseur.get('nom', 'N/A'),
+                        'type_document': 'demande_prix',
+                        'source_catalog': True,
+                        'nb_produits_catalog': len(produits_catalog),
+                        'nb_produits_manuels': len(produits_manuels),
+                        'construction_specs': {
+                            'delai_livraison': delai_livraison,
+                            'lieu_livraison': lieu_livraison,
+                            'conditions_livraison': conditions_livraison,
+                            'installation_requise': installation_requise,
+                            'specifications_techniques': specifications_techniques
+                        }
+                    })
+                }
+                
+                formulaire_id = gestionnaire.create_formulaire_with_lines(formulaire_data, st.session_state.dp_lines)
+                
+                if formulaire_id:
+                    action_text = "créée et envoyée" if submitted else "sauvée en brouillon"
+                    st.success(f"✅ Demande de Prix {numero_dp} {action_text} ! (ID: {formulaire_id})")
+                    if produits_catalog:
+                        st.info(f"📦 {len(produits_catalog)} produit(s) du catalogue inclus")
+                    st.session_state.dp_lines = []  # Vider les lignes
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la création de la demande.")
+
+def render_create_bon_achat_form(gestionnaire):
+    """Formulaire de création de Bon d'Achat - VERSION PRODUITS INTÉGRÉE"""
+    st.markdown("#### 🛒 Nouveau Bon d'Achat")
+    
+    # Vérification des fournisseurs
+    fournisseurs = gestionnaire.get_all_fournisseurs()
+    
+    if not fournisseurs:
+        st.warning("⚠️ Aucun fournisseur disponible.")
+        st.info("💡 Créez d'abord un fournisseur dans l'onglet 'Liste Fournisseurs' pour pouvoir créer un bon d'achat.")
+        
+        if st.button("➕ Aller créer un fournisseur", use_container_width=True, key="ba_goto_create_fournisseur"):
+            st.session_state.fournisseur_action = "create_fournisseur"
+            st.rerun()
+        return
+    
+    # Vérification du module Produits
+    if not gestionnaire.product_manager:
+        st.error("⚠️ Module Produits non disponible. Impossible d'accéder au catalogue produits.")
+        st.info("💡 Activez le module Produits pour utiliser le catalogue produits intégré.")
+        return
+    
+    # Initialiser les lignes si nécessaire
+    if 'ba_lines' not in st.session_state:
+        st.session_state.ba_lines = []
+    
+    # Section pour ajouter des articles du catalogue (HORS du formulaire)
+    st.markdown("#### 🛒 Articles à commander (Catalogue Produits)")
+    
+    with st.expander("➕ Ajouter un produit du catalogue", expanded=len(st.session_state.ba_lines) == 0):
+        add_col1, add_col2, add_col3, add_col4 = st.columns(4)
+        
+        with add_col1:
+            # Recherche dans le catalogue produits
+            search_term = st.text_input("🔍 Rechercher produit:", key="ba_search_produit_catalog")
+            produits_catalog = gestionnaire.get_produits_crm_for_selection(search_term)
+            
+            if produits_catalog:
+                selected_produit = st.selectbox(
+                    "Produit du catalogue:",
+                    options=[None] + produits_catalog,
+                    format_func=lambda x: "-- Sélectionner --" if x is None else f"{x.get('code_produit', '')} - {x.get('nom', '')} ({x.get('materiau', '')}/{x.get('nuance', '')})",
+                    key="ba_selected_produit_catalog"
+                )
+            else:
+                selected_produit = None
+                if search_term:
+                    st.info("Aucun produit trouvé")
+                else:
+                    st.info("Tapez pour rechercher des produits")
+            
+            # Pré-remplir avec les données du produit du catalogue
+            description_article = st.text_input(
+                "Description *:",
+                value=f"{selected_produit.get('code_produit', '')} - {selected_produit.get('nom', '')}" if selected_produit else '',
+                key="ba_description_catalog"
+            )
+        
+        with add_col2:
+            code_article = st.text_input(
+                "Code produit:",
+                value=selected_produit.get('code_produit', '') if selected_produit else '',
+                key="ba_code_catalog"
+            )
+            
+            quantite = st.number_input(
+                "Quantité *:",
+                min_value=0.01,
+                value=1.0,
+                step=0.01,
+                key="ba_quantite_catalog"
+            )
+        
+        with add_col3:
+            # Unités de mesure construction Québec
+            unite_defaut = selected_produit.get('unite_vente', 'unité') if selected_produit else 'unité'
+            unite_options = [
+                # Unités de quantité
+                'unité', 'pièce', 'ensemble', 'lot',
+                # Unités linéaires
+                'm', 'pi', 'po', 'pi linéaire',
+                # Unités de surface  
+                'm²', 'pi²', 'pi carré',
+                # Unités de volume
+                'm³', 'pi³', 'vg³', 'litre', 'gallon',
+                # Unités de poids
+                'kg', 'lb', 'tonne', 'tonne métrique',
+                # Emballages construction
+                'sac', 'boîte', 'caisse', 'palette', 'rouleau', 'feuille',
+                # Temps
+                'heure', 'jour', 'semaine',
+                # Spéciaux construction
+                'mètre carré', 'pied carré', 'mètre cube', 'verge cube'
+            ]
+            if unite_defaut not in unite_options:
+                unite_options.insert(0, unite_defaut)
+            
+            unite = st.selectbox(
+                "Unité:",
+                options=unite_options,
+                index=unite_options.index(unite_defaut),
+                key="ba_unite_catalog"
+            )
+            
+            # Prix pré-rempli depuis le produit du catalogue
+            prix_defaut = selected_produit.get('prix_unitaire', 0.0) if selected_produit else 0.0
+            prix_unitaire = st.number_input(
+                "Prix unitaire $ *:",
+                min_value=0.0,
+                value=prix_defaut,
+                step=0.01,
+                key="ba_prix_catalog",
+                help=f"Prix catalogue: {prix_defaut:.2f} $" if prix_defaut > 0 else "Prix à négocier"
+            )
+        
+        with add_col4:
+            montant_ligne = quantite * prix_unitaire
+            st.metric("💰 Montant ligne:", f"{montant_ligne:.2f} $")
+            
+            # Afficher infos catalogue
+            if selected_produit:
+                stock = selected_produit.get('stock_disponible', 0)
+                if stock > 0:
+                    if quantite > stock:
+                        st.warning(f"⚠️ Stock: {stock} {unite_defaut}")
+                    else:
+                        st.info(f"📦 Stock: {stock} {unite_defaut}")
+                
+                if selected_produit.get('fournisseur_principal'):
+                    st.caption(f"🏪 Fournisseur principal: {selected_produit['fournisseur_principal']}")
+            
+            notes_ligne = st.text_input(
+                "Notes ligne:",
+                key="ba_notes_ligne_catalog"
+            )
+        
+        if st.button("➕ Ajouter au bon d'achat", use_container_width=True, key="ba_add_line_catalog"):
+            if description_article and quantite > 0 and prix_unitaire >= 0:
+                nouvelle_ligne = {
+                    'description': description_article,
+                    'code_article': code_article,
+                    'quantite': quantite,
+                    'unite': unite,
+                    'prix_unitaire': prix_unitaire,
+                    'notes_ligne': notes_ligne,
+                    # Métadonnées du catalogue pour référence
+                    'produit_crm_id': selected_produit.get('id') if selected_produit else None,
+                    'prix_unitaire_crm': selected_produit.get('prix_unitaire', 0) if selected_produit else 0,
+                    'stock_disponible_crm': selected_produit.get('stock_disponible', 0) if selected_produit else 0
+                }
+                st.session_state.ba_lines.append(nouvelle_ligne)
+                st.success("✅ Produit ajouté au bon d'achat !")
+                st.rerun()
+            else:
+                st.error("Description, quantité et prix sont obligatoires.")
+    
+    # Section pour ajout manuel (pour les produits non catalogués)
+    with st.expander("✏️ Ajouter un article manuel (non catalogué)", expanded=False):
+        manual_col1, manual_col2, manual_col3, manual_col4 = st.columns(4)
+        
+        with manual_col1:
+            description_manual = st.text_input("Description manuelle:", key="ba_desc_manual")
+            code_manual = st.text_input("Code article:", key="ba_code_manual")
+        
+        with manual_col2:
+            quantite_manual = st.number_input("Quantité:", min_value=0.01, value=1.0, step=0.01, key="ba_qty_manual")
+            unite_manual = st.selectbox("Unité:", options=['UN', 'M', 'M²', 'M³', 'KG', 'L', 'H', 'T'], key="ba_unit_manual")
+        
+        with manual_col3:
+            prix_manual = st.number_input("Prix unitaire $:", min_value=0.0, value=0.0, step=0.01, key="ba_price_manual")
+            notes_manual = st.text_input("Notes:", key="ba_notes_manual")
+        
+        with manual_col4:
+            montant_manual = quantite_manual * prix_manual
+            st.metric("💰 Montant:", f"{montant_manual:.2f} $")
+        
+        if st.button("➕ Ajouter article manuel", use_container_width=True, key="ba_add_manual"):
+            if description_manual and quantite_manual > 0:
+                nouvelle_ligne_manual = {
+                    'description': description_manual,
+                    'code_article': code_manual,
+                    'quantite': quantite_manual,
+                    'unite': unite_manual,
+                    'prix_unitaire': prix_manual,
+                    'notes_ligne': notes_manual,
+                    'produit_crm_id': None,  # Pas de lien catalogue
+                    'prix_unitaire_crm': 0,
+                    'stock_disponible_crm': 0
+                }
+                st.session_state.ba_lines.append(nouvelle_ligne_manual)
+                st.success("✅ Article manuel ajouté !")
+                st.rerun()
+            else:
+                st.error("Description et quantité sont obligatoires.")
+    
+    # Affichage des lignes ajoutées avec calcul du total (HORS du formulaire)
+    if st.session_state.ba_lines:
+        st.markdown("**Articles dans le bon d'achat:**")
+        
+        total_montant = 0
+        for i, ligne in enumerate(st.session_state.ba_lines):
+            montant_ligne = ligne['quantite'] * ligne['prix_unitaire']
+            total_montant += montant_ligne
+            
+            with st.container():
+                col_desc, col_qty, col_prix, col_montant, col_info, col_action = st.columns([3, 1, 1, 1, 1, 1])
+                
+                with col_desc:
+                    is_from_catalog = ligne.get('produit_crm_id') is not None
+                    icon = "🔗" if is_from_catalog else "✏️"
+                    st.markdown(f"{icon} **{ligne['description']}** ({ligne['code_article']})")
+                    if ligne['notes_ligne']:
+                        st.caption(f"📝 {ligne['notes_ligne']}")
+                
+                with col_qty:
+                    st.markdown(f"{ligne['quantite']} {ligne['unite']}")
+                
+                with col_prix:
+                    st.markdown(f"{ligne['prix_unitaire']:.2f} $")
+                
+                with col_montant:
+                    st.markdown(f"**{montant_ligne:.2f} $**")
+                
+                with col_info:
+                    if is_from_catalog:
+                        prix_catalog = ligne.get('prix_unitaire_crm', 0)
+                        if prix_catalog > 0 and prix_catalog != ligne['prix_unitaire']:
+                            diff = ligne['prix_unitaire'] - prix_catalog
+                            if diff > 0:
+                                st.caption(f"📈 +{diff:.2f}$ vs catalogue")
+                            else:
+                                st.caption(f"📉 {diff:.2f}$ vs catalogue")
+                        else:
+                            st.caption("🔗 Catalogue")
+                    else:
+                        st.caption("✏️ Manuel")
+                
+                with col_action:
+                    if st.button("🗑️", key=f"ba_remove_{i}", help="Supprimer cette ligne"):
+                        st.session_state.ba_lines.pop(i)
+                        st.rerun()
+        
+        # Affichage du total
+        st.markdown("---")
+        st.markdown(f"### 💰 **Total Bon d'Achat: {total_montant:.2f} $ CAD**")
+    else:
+        st.info("Aucun article ajouté. Ajoutez au moins un article pour créer le bon d'achat.")
+    
+    # Actions rapides pour vider la liste
+    if st.session_state.ba_lines:
+        if st.button("🗑️ Vider tous les articles", key="ba_clear_all"):
+            st.session_state.ba_lines = []
+            st.rerun()
+    
+    st.markdown("---")
+    
+    # Formulaire principal (SANS la gestion des lignes)
+    with st.form("bon_achat_form", clear_on_submit=False):
+        st.markdown("#### 🛒 Informations du Bon d'Achat")
+        
+        # En-tête du formulaire
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Pré-sélection si définie depuis un autre onglet
+            preselected_id = st.session_state.get('preselected_fournisseur_id')
+            default_index = 0
+            
+            if preselected_id:
+                for i, f in enumerate(fournisseurs):
+                    if f.get('id') == preselected_id:
+                        default_index = i
+                        break
+                # Réinitialiser après utilisation
+                if 'preselected_fournisseur_id' in st.session_state:
+                    del st.session_state.preselected_fournisseur_id
+            
+            selected_fournisseur = st.selectbox(
+                "Fournisseur *:",
+                options=fournisseurs,
+                format_func=lambda f: f.get('nom', 'N/A'),
+                index=default_index,
+                help="Sélectionnez le fournisseur pour le bon d'achat"
+            )
+            
+            priorite = st.selectbox(
+                "Priorité:",
+                options=['NORMAL', 'URGENT', 'CRITIQUE'],
+                index=0
+            )
+        
+        with col2:
+            numero_ba = gestionnaire.generate_document_number('BON_ACHAT')
+            st.text_input("Numéro BA:", value=numero_ba, disabled=True)
+            
+            date_echeance = st.date_input(
+                "Date livraison souhaitée:",
+                value=datetime.now().date() + timedelta(days=14),
+                help="Date de livraison souhaitée"
+            )
+        
+        # Section construction spécialisée
+        st.markdown("#### 🏗️ Spécifications Construction")
+        
+        # Informations spécifiques construction
+        info_col1, info_col2 = st.columns(2)
+        
+        with info_col1:
+            delai_livraison = st.selectbox(
+                "Délai de livraison souhaité:",
+                ["Immédiat", "24-48h", "1 semaine", "2 semaines", "1 mois", "À convenir"],
+                index=2,
+                key="ba_delai_livraison"
+            )
+            
+            lieu_livraison = st.text_input(
+                "Lieu de livraison:",
+                placeholder="Adresse du chantier ou entrepôt",
+                key="ba_lieu_livraison"
+            )
+        
+        with info_col2:
+            conditions_livraison = st.selectbox(
+                "Conditions de livraison:",
+                ["Franco chantier", "Départ usine", "Rendu sur site", "À convenir"],
+                index=0,
+                key="ba_conditions_livraison"
+            )
+            
+            installation_requise = st.checkbox("Installation/pose incluse", value=False, key="ba_installation")
+        
+        # Spécifications techniques
+        specifications_techniques = st.text_area(
+            "Spécifications techniques:",
+            placeholder="Ex: Conformité CSA A23.1, Résistance 25 MPa, Certification LEED...",
+            help="Normes et spécifications techniques requises",
+            key="ba_specifications"
+        )
+        
+        # Notes générales
+        notes = st.text_area(
+            "Notes / Instructions additionnelles:",
+            placeholder="Instructions spéciales, conditions de paiement, garanties requises...",
+            help="Notes qui apparaîtront sur le bon d'achat",
+            key="ba_notes"
+        )
+        
+        # Boutons de soumission
+        st.markdown("---")
+        submit_col1, submit_col2 = st.columns(2)
+        
+        with submit_col1:
+            submitted = st.form_submit_button("🛒 Créer Bon d'Achat", use_container_width=True)
+        
+        with submit_col2:
+            save_draft = st.form_submit_button("💾 Sauver Brouillon", use_container_width=True)
+        
+        # Traitement du formulaire
+        if (submitted or save_draft):
+            if not st.session_state.ba_lines:
+                st.error("❌ Ajoutez au moins un article avant de créer le bon d'achat.")
+            else:
+                # Vérification de la validité du fournisseur sélectionné
+                if not selected_fournisseur or 'company_id' not in selected_fournisseur:
+                    st.error("❌ Erreur avec le fournisseur sélectionné. Veuillez réessayer.")
+                    st.rerun()
+                    return
+                
+                # Calculer les totaux et statistiques
+                total_calcule = sum(l['quantite'] * l['prix_unitaire'] for l in st.session_state.ba_lines)
+                produits_catalog = [l for l in st.session_state.ba_lines if l.get('produit_crm_id')]
+                produits_manuels = [l for l in st.session_state.ba_lines if not l.get('produit_crm_id')]
+                
+                # Construire les notes complètes avec spécifications construction
+                notes_completes = []
+                if specifications_techniques:
+                    notes_completes.append(f"SPÉCIFICATIONS TECHNIQUES:\n{specifications_techniques}")
+                if lieu_livraison:
+                    notes_completes.append(f"LIVRAISON: {lieu_livraison} ({conditions_livraison})")
+                if delai_livraison != "À convenir":
+                    notes_completes.append(f"DÉLAI: {delai_livraison}")
+                if installation_requise:
+                    notes_completes.append("INSTALLATION/POSE INCLUSE REQUISE")
+                if notes:
+                    notes_completes.append(f"NOTES ADDITIONNELLES:\n{notes}")
+                
+                notes_finales = "\n\n".join(notes_completes)
+                
+                formulaire_data = {
+                    'type_formulaire': 'BON_ACHAT',
+                    'numero_document': numero_ba,
+                    'company_id': selected_fournisseur['company_id'],
+                    'employee_id': None,  # À adapter selon l'utilisateur connecté
+                    'statut': 'VALIDÉ' if submitted else 'BROUILLON',
+                    'priorite': priorite,
+                    'date_echeance': date_echeance.isoformat(),
+                    'notes': notes_finales,
+                    'metadonnees_json': json.dumps({
+                        'fournisseur_nom': selected_fournisseur.get('nom', 'N/A'),
+                        'type_document': 'bon_achat',
+                        'total_calcule': total_calcule,
+                        'source_catalog': True,
+                        'nb_produits_catalog': len(produits_catalog),
+                        'nb_produits_manuels': len(produits_manuels),
+                        'construction_specs': {
+                            'delai_livraison': delai_livraison,
+                            'lieu_livraison': lieu_livraison,
+                            'conditions_livraison': conditions_livraison,
+                            'installation_requise': installation_requise,
+                            'specifications_techniques': specifications_techniques
+                        }
+                    })
+                }
+                
+                formulaire_id = gestionnaire.create_formulaire_with_lines(formulaire_data, st.session_state.ba_lines)
+                
+                if formulaire_id:
+                    action_text = "créé et envoyé" if submitted else "sauvé en brouillon"
+                    st.success(f"✅ Bon d'Achat {numero_ba} {action_text} ! (ID: {formulaire_id})")
+                    st.success(f"💰 Montant total: {total_calcule:,.2f} $ CAD")
+                    if produits_catalog:
+                        st.info(f"🔗 {len(produits_catalog)} produit(s) du catalogue inclus")
+                    if produits_manuels:
+                        st.info(f"✏️ {len(produits_manuels)} produit(s) manuel(s) inclus")
+                    st.session_state.ba_lines = []  # Vider les lignes
+                    st.rerun()
+                else:
+                    st.error("❌ Erreur lors de la création du bon d'achat.")
+
+def render_list_demandes_prix(gestionnaire):
+    """Liste des demandes de prix"""
+    st.markdown("#### 📋 Liste des Demandes de Prix")
+    
+    # Récupérer toutes les demandes de prix
+    try:
+        query = '''
+            SELECT f.*, c.nom as company_nom,
+                   COUNT(fl.id) as nombre_lignes
+            FROM formulaires f
+            LEFT JOIN companies c ON f.company_id = c.id
+            LEFT JOIN formulaire_lignes fl ON f.id = fl.formulaire_id
+            WHERE f.type_formulaire = 'DEMANDE_PRIX'
+            GROUP BY f.id
+            ORDER BY f.date_creation DESC
+        '''
+        demandes = gestionnaire.db.execute_query(query)
+        
+        if not demandes:
+            st.info("Aucune demande de prix créée.")
+            return
+        
+        # Affichage sous forme de tableau
+        df_data = []
+        for dp in demandes:
+            statut_icon = {
+                'BROUILLON': '📝',
+                'VALIDÉ': '✅',
+                'ENVOYÉ': '📤',
+                'APPROUVÉ': '👍',
+                'TERMINÉ': '✅',
+                'ANNULÉ': '❌'
+            }.get(dp['statut'], '❓')
+            
+            priorite_icon = {
+                'NORMAL': '🟢',
+                'URGENT': '🟡',
+                'CRITIQUE': '🔴'
+            }.get(dp['priorite'], '⚪')
+            
+            # Identifier si c'est un document avec catalogue
+            metadonnees = {}
+            try:
+                metadonnees = json.loads(dp.get('metadonnees_json', '{}'))
+            except:
+                pass
+            
+            source_icon = "🔗" if metadonnees.get('source_catalog') else "📄"
+            
+            df_data.append({
+                '🆔': dp['id'],
+                '📋 Numéro': dp['numero_document'],
+                '🏪 Fournisseur': dp['company_nom'],
+                '📊 Statut': f"{statut_icon} {dp['statut']}",
+                '⚡ Priorité': f"{priorite_icon} {dp['priorite']}",
+                '📦 Nb Articles': dp['nombre_lignes'],
+                '🔗 Source': f"{source_icon} {'Catalogue' if metadonnees.get('source_catalog') else 'Manuel'}",
+                '📅 Créé le': pd.to_datetime(dp['date_creation']).strftime('%d/%m/%Y'),
+                '⏰ Échéance': pd.to_datetime(dp['date_echeance']).strftime('%d/%m/%Y') if dp['date_echeance'] else 'N/A'
+            })
+        
+        st.dataframe(pd.DataFrame(df_data), use_container_width=True)
+        
+        # Sélection pour actions
+        if demandes:
+            st.markdown("---")
+            selected_dp_id = st.selectbox(
+                "Sélectionner une demande pour action:",
+                options=[dp['id'] for dp in demandes],
+                format_func=lambda id: next((dp['numero_document'] for dp in demandes if dp['id'] == id), ''),
+                key="select_dp_for_action"
+            )
+            
+            if selected_dp_id:
+                action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+                
+                with action_col1:
+                    if st.button("👁️ Voir Détails", use_container_width=True, key="view_dp_details"):
+                        st.session_state.selected_formulaire_id = selected_dp_id
+                        st.session_state.selected_formulaire_type = 'DEMANDE_PRIX'
+                
+                with action_col2:
+                    if st.button("📤 Marquer Envoyé", use_container_width=True, key="mark_dp_sent"):
+                        # Mettre à jour le statut
+                        gestionnaire.db.execute_update(
+                            "UPDATE formulaires SET statut = 'ENVOYÉ' WHERE id = ?",
+                            (selected_dp_id,)
+                        )
+                        st.success("Statut mis à jour !")
+                        st.rerun()
+                
+                with action_col3:
+                    if st.button("🛒 Convertir en BA", use_container_width=True, key="convert_dp_to_ba"):
+                        st.info("💡 Consultez l'onglet 'Bon d'Achat' pour créer un nouveau BA basé sur cette DP.")
+                
+                with action_col4:
+                    if st.button("📄 Export HTML", use_container_width=True, key="export_dp_html"):
+                        # Générer et proposer le téléchargement HTML
+                        html_content = gestionnaire.generate_demande_prix_html(selected_dp_id)
+                        if html_content:
+                            # Récupérer le numéro de document
+                            formulaire = gestionnaire.get_formulaire_details_with_lines(selected_dp_id)
+                            numero_doc = formulaire.get('numero_document', f'DP_{selected_dp_id}')
+                            
+                            st.download_button(
+                                label="⬇️ Télécharger HTML",
+                                data=html_content,
+                                file_name=f"demande_prix_{numero_doc}.html",
+                                mime="text/html",
+                                use_container_width=True,
+                                key=f"download_dp_{selected_dp_id}"
+                            )
+                            st.success("✅ Export HTML généré avec succès !")
+                        else:
+                            st.error("❌ Erreur lors de la génération HTML")
+        
+    except Exception as e:
+        st.error(f"Erreur récupération demandes: {e}")
+
+def render_list_bons_achat(gestionnaire):
+    """Liste des bons d'achat"""
+    st.markdown("#### 🛒 Liste des Bons d'Achat")
+    
+    # Récupérer tous les bons d'achat
+    try:
+        query = '''
+            SELECT f.*, c.nom as company_nom,
+                   COUNT(fl.id) as nombre_lignes,
+                   COALESCE(SUM(fl.montant_ligne), 0) as montant_total_calcule
+            FROM formulaires f
+            LEFT JOIN companies c ON f.company_id = c.id
+            LEFT JOIN formulaire_lignes fl ON f.id = fl.formulaire_id
+            WHERE f.type_formulaire = 'BON_ACHAT'
+            GROUP BY f.id
+            ORDER BY f.date_creation DESC
+        '''
+        bons_achat = gestionnaire.db.execute_query(query)
+        
+        if not bons_achat:
+            st.info("Aucun bon d'achat créé.")
+            return
+        
+        # Affichage sous forme de tableau
+        df_data = []
+        for ba in bons_achat:
+            statut_icon = {
+                'BROUILLON': '📝',
+                'VALIDÉ': '✅',
+                'ENVOYÉ': '📤',
+                'APPROUVÉ': '👍',
+                'TERMINÉ': '✅',
+                'ANNULÉ': '❌'
+            }.get(ba['statut'], '❓')
+            
+            priorite_icon = {
+                'NORMAL': '🟢',
+                'URGENT': '🟡',
+                'CRITIQUE': '🔴'
+            }.get(ba['priorite'], '⚪')
+            
+            # Identifier si c'est un document avec catalogue
+            metadonnees = {}
+            try:
+                metadonnees = json.loads(ba.get('metadonnees_json', '{}'))
+            except:
+                pass
+            
+            source_icon = "🔗" if metadonnees.get('source_catalog') else "📄"
+            
+            df_data.append({
+                '🆔': ba['id'],
+                '🛒 Numéro': ba['numero_document'],
+                '🏪 Fournisseur': ba['company_nom'],
+                '📊 Statut': f"{statut_icon} {ba['statut']}",
+                '⚡ Priorité': f"{priorite_icon} {ba['priorite']}",
+                '📦 Nb Articles': ba['nombre_lignes'],
+                '💰 Montant': f"{ba['montant_total_calcule']:,.2f} $",
+                '🔗 Source': f"{source_icon} {'Catalogue' if metadonnees.get('source_catalog') else 'Manuel'}",
+                '📅 Créé le': pd.to_datetime(ba['date_creation']).strftime('%d/%m/%Y'),
+                '📦 Livraison': pd.to_datetime(ba['date_echeance']).strftime('%d/%m/%Y') if ba['date_echeance'] else 'N/A'
+            })
+        
+        st.dataframe(pd.DataFrame(df_data), use_container_width=True)
+        
+        # Statistiques rapides avec distinction Catalogue/Manuel
+        if bons_achat:
+            st.markdown("---")
+            st.markdown("#### 📊 Statistiques Rapides")
+            
+            total_montant = sum(ba['montant_total_calcule'] for ba in bons_achat)
+            nb_fournisseurs = len(set(ba['company_nom'] for ba in bons_achat))
+            
+            # Compter les documents catalogue vs manuels
+            nb_catalog = 0
+            nb_manuels = 0
+            for ba in bons_achat:
+                try:
+                    metadonnees = json.loads(ba.get('metadonnees_json', '{}'))
+                    if metadonnees.get('source_catalog'):
+                        nb_catalog += 1
+                    else:
+                        nb_manuels += 1
+                except:
+                    nb_manuels += 1
+            
+            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+            
+            with stat_col1:
+                st.metric("📊 Total BA", len(bons_achat))
+            with stat_col2:
+                st.metric("💰 Montant Total", f"{total_montant:,.0f} $")
+            with stat_col3:
+                st.metric("🏪 Fournisseurs", nb_fournisseurs)
+            with stat_col4:
+                moyenne = total_montant / len(bons_achat) if bons_achat else 0
+                st.metric("📈 BA Moyen", f"{moyenne:,.0f} $")
+            
+            # Statistiques catalogue
+            if nb_catalog > 0:
+                st.markdown("##### 🔗 Répartition par Source")
+                source_col1, source_col2 = st.columns(2)
+                with source_col1:
+                    st.metric("🔗 Avec produits catalogue", nb_catalog)
+                with source_col2:
+                    st.metric("✏️ Entièrement manuels", nb_manuels)
+        
+        # Sélection pour actions
+        if bons_achat:
+            st.markdown("---")
+            selected_ba_id = st.selectbox(
+                "Sélectionner un bon d'achat pour action:",
+                options=[ba['id'] for ba in bons_achat],
+                format_func=lambda id: next((ba['numero_document'] for ba in bons_achat if ba['id'] == id), ''),
+                key="select_ba_for_action"
+            )
+            
+            if selected_ba_id:
+                action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+                
+                with action_col1:
+                    if st.button("👁️ Voir Détails", use_container_width=True, key="view_ba_details"):
+                        st.session_state.selected_formulaire_id = selected_ba_id
+                        st.session_state.selected_formulaire_type = 'BON_ACHAT'
+                
+                with action_col2:
+                    if st.button("📤 Marquer Envoyé", use_container_width=True, key="mark_ba_sent"):
+                        gestionnaire.db.execute_update(
+                            "UPDATE formulaires SET statut = 'ENVOYÉ' WHERE id = ?",
+                            (selected_ba_id,)
+                        )
+                        st.success("Statut mis à jour !")
+                        st.rerun()
+                
+                with action_col3:
+                    if st.button("✅ Marquer Livré", use_container_width=True, key="mark_ba_delivered"):
+                        gestionnaire.db.execute_update(
+                            "UPDATE formulaires SET statut = 'TERMINÉ' WHERE id = ?",
+                            (selected_ba_id,)
+                        )
+                        st.success("Bon d'achat marqué comme livré !")
+                        st.rerun()
+                
+                with action_col4:
+                    if st.button("📄 Export HTML", use_container_width=True, key="export_ba_html"):
+                        # Générer et proposer le téléchargement HTML
+                        html_content = gestionnaire.generate_bon_achat_html(selected_ba_id)
+                        if html_content:
+                            # Récupérer le numéro de document
+                            formulaire = gestionnaire.get_formulaire_details_with_lines(selected_ba_id)
+                            numero_doc = formulaire.get('numero_document', f'BA_{selected_ba_id}')
+                            
+                            st.download_button(
+                                label="⬇️ Télécharger HTML",
+                                data=html_content,
+                                file_name=f"bon_achat_{numero_doc}.html",
+                                mime="text/html",
+                                use_container_width=True,
+                                key=f"download_ba_{selected_ba_id}"
+                            )
+                            st.success("✅ Export HTML généré avec succès !")
+                        else:
+                            st.error("❌ Erreur lors de la génération HTML")
+        
+    except Exception as e:
+        st.error(f"Erreur récupération bons d'achat: {e}")
+
+def render_view_demande_prix(gestionnaire):
+    """Consultation détaillée d'une demande de prix"""
+    st.markdown("#### 👁️ Consulter Demande de Prix")
+    
+    if 'selected_formulaire_id' not in st.session_state or st.session_state.get('selected_formulaire_type') != 'DEMANDE_PRIX':
+        st.info("Sélectionnez une demande de prix dans la liste pour la consulter.")
+        return
+    
+    formulaire_id = st.session_state.selected_formulaire_id
+    dp_details = gestionnaire.get_formulaire_details_with_lines(formulaire_id)
+    
+    if not dp_details:
+        st.error("Demande de prix non trouvée.")
+        return
+    
+    # En-tête
+    st.markdown(f"### 📋 {dp_details['numero_document']}")
+    
+    info_col1, info_col2 = st.columns(2)
+    
+    with info_col1:
+        st.markdown(f"""
+        **🏪 Fournisseur:** {dp_details['company_nom']}
+        
+        **📊 Statut:** {dp_details['statut']}
+        
+        **⚡ Priorité:** {dp_details['priorite']}
+        """)
+    
+    with info_col2:
+        st.markdown(f"""
+        **📅 Créé le:** {pd.to_datetime(dp_details['date_creation']).strftime('%d/%m/%Y')}
+        
+        **⏰ Échéance:** {pd.to_datetime(dp_details['date_echeance']).strftime('%d/%m/%Y') if dp_details['date_echeance'] else 'N/A'}
+        
+        **📦 Nb Articles:** {len(dp_details.get('lignes', []))}
+        """)
+    
+    # Informations catalogue si disponibles
+    try:
+        metadonnees = json.loads(dp_details.get('metadonnees_json', '{}'))
+        if metadonnees.get('source_catalog'):
+            st.info(f"🔗 **Document Catalogue** - {metadonnees.get('nb_produits_catalog', 0)} produit(s) du catalogue, {metadonnees.get('nb_produits_manuels', 0)} manuel(s)")
+    except:
+        pass
+    
+    # Notes
+    if dp_details.get('notes'):
+        st.markdown("---")
+        st.markdown("**📝 Notes:**")
+        st.markdown(f"_{dp_details['notes']}_")
+    
+    # Liste des articles
+    st.markdown("---")
+    st.markdown("#### 📦 Articles Demandés")
+    
+    lignes = dp_details.get('lignes', [])
+    if lignes:
+        df_lignes = []
+        for ligne in lignes:
+            df_lignes.append({
+                '📦 Description': ligne['description'],
+                '🔗 Code': ligne.get('code_article', ''),
+                '📊 Quantité': f"{ligne['quantite']} {ligne.get('unite', 'UN')}",
+                '📝 Notes': ligne.get('notes_ligne', '')
+            })
+        
+        st.dataframe(pd.DataFrame(df_lignes), use_container_width=True)
+    else:
+        st.info("Aucun article dans cette demande.")
+    
+    # Actions
+    st.markdown("---")
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+    
+    with action_col1:
+        if st.button("🔙 Retour à la liste", use_container_width=True, key="return_to_dp_list"):
+            del st.session_state.selected_formulaire_id
+            del st.session_state.selected_formulaire_type
+            st.rerun()
+    
+    with action_col2:
+        if st.button("📄 Export HTML", use_container_width=True, key="view_export_dp_html"):
+            html_content = gestionnaire.generate_demande_prix_html(formulaire_id)
+            if html_content:
+                numero_doc = dp_details.get('numero_document', f'DP_{formulaire_id}')
+                st.download_button(
+                    label="⬇️ Télécharger HTML",
+                    data=html_content,
+                    file_name=f"demande_prix_{numero_doc}.html",
+                    mime="text/html",
+                    use_container_width=True,
+                    key=f"view_download_dp_{formulaire_id}"
+                )
+                st.success("✅ Export HTML généré !")
+            else:
+                st.error("❌ Erreur génération HTML")
+    
+    with action_col3:
+        if st.button("🛒 Créer BA basé sur DP", use_container_width=True, key="create_ba_from_dp"):
+            # Préparer les données pour un nouveau BA
+            st.session_state.ba_lines = [
+                {
+                    'description': ligne['description'],
+                    'code_article': ligne.get('code_article', ''),
+                    'quantite': ligne['quantite'],
+                    'unite': ligne.get('unite', 'UN'),
+                    'prix_unitaire': 0.0,  # À remplir
+                    'notes_ligne': ligne.get('notes_ligne', ''),
+                    'produit_crm_id': None,  # À reconnecter si possible
+                    'prix_unitaire_crm': 0,
+                    'stock_disponible_crm': 0
+                }
+                for ligne in lignes
+            ]
+            st.success("📋 Articles copiés vers nouveau BA ! Consultez l'onglet 'Bon d'Achat'.")
+    
+    with action_col4:
+        if st.button("📤 Marquer Envoyé", use_container_width=True, key="view_mark_dp_sent"):
+            gestionnaire.db.execute_update(
+                "UPDATE formulaires SET statut = 'ENVOYÉ' WHERE id = ?",
+                (formulaire_id,)
+            )
+            st.success("Statut mis à jour !")
+            st.rerun()
+
+def render_view_bon_achat(gestionnaire):
+    """Consultation détaillée d'un bon d'achat"""
+    st.markdown("#### 👁️ Consulter Bon d'Achat")
+    
+    if 'selected_formulaire_id' not in st.session_state or st.session_state.get('selected_formulaire_type') != 'BON_ACHAT':
+        st.info("Sélectionnez un bon d'achat dans la liste pour le consulter.")
+        return
+    
+    formulaire_id = st.session_state.selected_formulaire_id
+    ba_details = gestionnaire.get_formulaire_details_with_lines(formulaire_id)
+    
+    if not ba_details:
+        st.error("Bon d'achat non trouvé.")
+        return
+    
+    # En-tête
+    st.markdown(f"### 🛒 {ba_details['numero_document']}")
+    
+    info_col1, info_col2 = st.columns(2)
+    
+    with info_col1:
+        st.markdown(f"""
+        **🏪 Fournisseur:** {ba_details['company_nom']}
+        
+        **📊 Statut:** {ba_details['statut']}
+        
+        **⚡ Priorité:** {ba_details['priorite']}
+        """)
+    
+    with info_col2:
+        st.markdown(f"""
+        **📅 Créé le:** {pd.to_datetime(ba_details['date_creation']).strftime('%d/%m/%Y')}
+        
+        **📦 Livraison:** {pd.to_datetime(ba_details['date_echeance']).strftime('%d/%m/%Y') if ba_details['date_echeance'] else 'N/A'}
+        
+        **💰 Montant Total:** {ba_details.get('montant_total', 0):,.2f} $ CAD
+        """)
+    
+    # Informations catalogue si disponibles
+    try:
+        metadonnees = json.loads(ba_details.get('metadonnees_json', '{}'))
+        if metadonnees.get('source_catalog'):
+            st.info(f"🔗 **Document Catalogue** - {metadonnees.get('nb_produits_catalog', 0)} produit(s) du catalogue, {metadonnees.get('nb_produits_manuels', 0)} manuel(s)")
+    except:
+        pass
+    
+    # Notes
+    if ba_details.get('notes'):
+        st.markdown("---")
+        st.markdown("**📝 Notes:**")
+        st.markdown(f"_{ba_details['notes']}_")
+    
+    # Liste des articles avec prix
+    st.markdown("---")
+    st.markdown("#### 🛒 Articles Commandés")
+    
+    lignes = ba_details.get('lignes', [])
+    if lignes:
+        df_lignes = []
+        total_montant = 0
+        
+        for ligne in lignes:
+            montant_ligne = ligne['quantite'] * ligne.get('prix_unitaire', 0)
+            total_montant += montant_ligne
+            
+            df_lignes.append({
+                '📦 Description': ligne['description'],
+                '🔗 Code': ligne.get('code_article', ''),
+                '📊 Quantité': f"{ligne['quantite']} {ligne.get('unite', 'UN')}",
+                '💵 Prix Unit.': f"{ligne.get('prix_unitaire', 0):.2f} $",
+                '💰 Montant': f"{montant_ligne:.2f} $",
+                '📝 Notes': ligne.get('notes_ligne', '')
+            })
+        
+        st.dataframe(pd.DataFrame(df_lignes), use_container_width=True)
+        
+        # Total
+        st.markdown(f"### 💰 **Total Commande: {total_montant:,.2f} $ CAD**")
+    else:
+        st.info("Aucun article dans ce bon d'achat.")
+    
+    # Actions
+    st.markdown("---")
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+    
+    with action_col1:
+        if st.button("🔙 Retour à la liste", use_container_width=True, key="return_to_ba_list"):
+            del st.session_state.selected_formulaire_id
+            del st.session_state.selected_formulaire_type
+            st.rerun()
+    
+    with action_col2:
+        if st.button("📄 Export HTML", use_container_width=True, key="view_export_ba_html"):
+            html_content = gestionnaire.generate_bon_achat_html(formulaire_id)
+            if html_content:
+                numero_doc = ba_details.get('numero_document', f'BA_{formulaire_id}')
+                st.download_button(
+                    label="⬇️ Télécharger HTML",
+                    data=html_content,
+                    file_name=f"bon_achat_{numero_doc}.html",
+                    mime="text/html",
+                    use_container_width=True,
+                    key=f"view_download_ba_{formulaire_id}"
+                )
+                st.success("✅ Export HTML généré !")
+            else:
+                st.error("❌ Erreur génération HTML")
+    
+    with action_col3:
+        if st.button("📦 Suivi Livraison", use_container_width=True, key="track_ba_delivery"):
+            st.info("🚧 Fonctionnalité à développer - Suivi livraison")
+    
+    with action_col4:
+        if st.button("✅ Marquer Livré", use_container_width=True, key="view_mark_ba_delivered"):
+            gestionnaire.db.execute_update(
+                "UPDATE formulaires SET statut = 'TERMINÉ' WHERE id = ?",
+                (formulaire_id,)
+            )
+            st.success("Bon d'achat marqué comme livré !")
+            st.rerun()
+
+# =========================================================================
+# FONCTIONS D'AFFICHAGE SIMPLIFIÉES (sans logique d'activation)
+# =========================================================================
+
+def render_fournisseurs_dashboard(gestionnaire):
+    """Dashboard principal des fournisseurs - VERSION SIMPLIFIÉE"""
+    st.markdown("### 📊 Vue d'Ensemble Fournisseurs")
+    
+    # Récupération des statistiques
+    stats = gestionnaire.get_fournisseurs_statistics()
+    
+    if not stats:
+        st.info("Aucune donnée fournisseur disponible.")
+        if st.button("➕ Ajouter Premier Fournisseur", use_container_width=True, key="dashboard_add_first_fournisseur"):
+            st.session_state.fournisseur_action = "create_fournisseur"
+            st.rerun()
+        return
+    
+    # Métriques principales
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("🏪 Total Fournisseurs", stats['total_fournisseurs'])
+    with col2:
+        st.metric("⭐ Éval. Moyenne", f"{stats['evaluation_moyenne']}/10")
+    with col3:
+        st.metric("📦 Délai Moyen", f"{stats['delai_moyen']} jours")
+    with col4:
+        montant_formate = f"{stats['montant_total_commandes']:,.0f} $ CAD"
+        st.metric("💰 Volume Total", montant_formate)
+    
+    st.markdown("---")
+    
+    # Graphiques
+    if stats['par_categorie'] or stats['top_performers']:
+        graph_col1, graph_col2 = st.columns(2)
+        
+        with graph_col1:
+            # Répartition par catégorie
+            if stats['par_categorie']:
+                st.markdown("#### 🏷️ Fournisseurs par Catégorie")
+                categories = list(stats['par_categorie'].keys())
+                valeurs = list(stats['par_categorie'].values())
+                
+                fig_cat = px.pie(
+                    values=valeurs, 
+                    names=categories, 
+                    title="Répartition par Catégorie"
+                )
+                fig_cat.update_layout(
+                    plot_bgcolor='rgba(0,0,0,0)', 
+                    paper_bgcolor='rgba(0,0,0,0)',
+                    title_x=0.5
+                )
+                st.plotly_chart(fig_cat, use_container_width=True)
+        
+        with graph_col2:
+            # Top performers
+            if stats['top_performers']:
+                st.markdown("#### 🏆 Top Fournisseurs")
+                df_top = pd.DataFrame(stats['top_performers'])
+                if not df_top.empty:
+                    fig_top = px.bar(
+                        df_top, 
+                        x='nom', 
+                        y='montant_total',
+                        color='evaluation_qualite',
+                        title="Top Fournisseurs (Volume & Qualité)",
+                        color_continuous_scale='Viridis'
+                    )
+                    fig_top.update_layout(
+                        plot_bgcolor='rgba(0,0,0,0)', 
+                        paper_bgcolor='rgba(0,0,0,0)',
+                        title_x=0.5,
+                        xaxis_title="Fournisseur",
+                        yaxis_title="Montant Total ($)",
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig_top, use_container_width=True)
+    
+    # Actions rapides
+    st.markdown("---")
+    st.markdown("#### ⚡ Actions Rapides")
+    
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+    
+    with action_col1:
+        if st.button("➕ Nouveau Fournisseur", use_container_width=True, key="dashboard_new_fournisseur"):
+            st.session_state.fournisseur_action = "create_fournisseur"
+            st.rerun()
+    
+    with action_col2:
+        if st.button("📋 Nouvelle Demande Prix", use_container_width=True, key="dashboard_new_dp"):
+            st.info("💡 Consultez l'onglet 'Demande de Prix' pour créer une nouvelle DP.")
+    
+    with action_col3:
+        if st.button("🛒 Nouveau Bon d'Achat", use_container_width=True, key="dashboard_new_ba"):
+            st.info("💡 Consultez l'onglet 'Bon d'Achat' pour créer un nouveau BA.")
+    
+    with action_col4:
+        if st.button("🔄 Actualiser Stats", use_container_width=True, key="dashboard_refresh"):
+            st.rerun()
+
+def render_fournisseurs_liste(gestionnaire):
+    """Liste et gestion des fournisseurs - VERSION SIMPLIFIÉE"""
+    st.markdown("### 📋 Liste des Fournisseurs")
+    
+    # Bouton d'ajout
+    col_add, _ = st.columns([1, 3])
+    with col_add:
+        if st.button("➕ Nouveau Fournisseur", use_container_width=True, key="liste_create_fournisseur_btn"):
+            st.session_state.fournisseur_action = "create_fournisseur"
+            st.rerun()
+    
+    # Filtres simplifiés
+    with st.expander("🔍 Filtres et Recherche", expanded=False):
+        filter_col1, filter_col2 = st.columns(2)
+        
+        with filter_col1:
+            categories = ['TOUS'] + gestionnaire.get_categories_disponibles()
+            category_filter = st.selectbox(
+                "Catégorie:", 
+                categories,
+                index=categories.index(st.session_state.fournisseur_filter_category) if st.session_state.fournisseur_filter_category in categories else 0,
+                key="fournisseur_category_filter"
+            )
+            st.session_state.fournisseur_filter_category = category_filter
+        
+        with filter_col2:
+            recherche = st.text_input("🔍 Rechercher:", placeholder="Nom, code, secteur...", key="fournisseur_search")
+    
+    # Récupération et filtrage des données
+    fournisseurs = gestionnaire.get_all_fournisseurs()
+    
+    if category_filter != 'TOUS':
+        fournisseurs = [f for f in fournisseurs if f.get('categorie_produits', '').upper() == category_filter.upper()]
+    
+    if recherche:
+        terme = recherche.lower()
+        fournisseurs = [f for f in fournisseurs if
+            terme in str(f.get('nom', '')).lower() or
+            terme in str(f.get('code_fournisseur', '')).lower() or
+            terme in str(f.get('secteur', '')).lower() or
+            terme in str(f.get('categorie_produits', '')).lower()
+        ]
+    
+    if not fournisseurs:
+        st.info("Aucun fournisseur ne correspond aux critères de recherche.")
+        return
+    
+    st.markdown(f"**{len(fournisseurs)} fournisseur(s) trouvé(s)**")
+    
+    # Tableau des fournisseurs simplifié
+    df_data = []
+    for f in fournisseurs:
+        evaluation_display = f"⭐ {f.get('evaluation_qualite', 0)}/10"
+        
+        df_data.append({
+            '🆔': f.get('id', ''),
+            '🏪 Nom': f.get('nom', 'N/A'),
+            '📋 Code': f.get('code_fournisseur', 'N/A'),
+            '🏷️ Catégorie': f.get('categorie_produits', 'N/A'),
+            '⭐ Évaluation': evaluation_display,
+            '📦 Délai (j)': f.get('delai_livraison_moyen', 0),
+            '💰 Total Commandes': f"{f.get('montant_total_commandes', 0):,.0f} $",
+            '📊 Nb Commandes': f.get('nombre_commandes', 0)
+        })
+    
+    st.dataframe(pd.DataFrame(df_data), use_container_width=True)
+    
+    # Actions sur un fournisseur
+    if fournisseurs:
+        st.markdown("---")
+        st.markdown("#### 🔧 Actions sur un Fournisseur")
+        
+        selected_fournisseur_id = st.selectbox(
+            "Sélectionner un fournisseur:",
+            options=[f.get('id') for f in fournisseurs],
+            format_func=lambda fid: next((f.get('nom', 'N/A') for f in fournisseurs if f.get('id') == fid), ''),
+            key="fournisseur_action_select"
+        )
+        
+        if selected_fournisseur_id:
+            action_col1, action_col2, action_col3, action_col4, action_col5 = st.columns(5)
+            
+            with action_col1:
+                if st.button("👁️ Voir Détails", use_container_width=True, key=f"liste_view_fournisseur_{selected_fournisseur_id}"):
+                    st.session_state.selected_fournisseur_id = selected_fournisseur_id
+                    st.session_state.fournisseur_action = "view_fournisseur_details"
+                    st.rerun()
+            
+            with action_col2:
+                if st.button("✏️ Modifier", use_container_width=True, key=f"liste_edit_fournisseur_{selected_fournisseur_id}"):
+                    st.session_state.selected_fournisseur_id = selected_fournisseur_id
+                    st.session_state.fournisseur_action = "edit_fournisseur"
+                    st.rerun()
+            
+            with action_col3:
+                if st.button("📋 Demande Prix", use_container_width=True, key=f"liste_dp_fournisseur_{selected_fournisseur_id}"):
+                    # Pré-sélectionner le fournisseur dans l'onglet DP
+                    st.session_state.preselected_fournisseur_id = selected_fournisseur_id
+                    st.info("💡 Consultez l'onglet 'Demande de Prix' - Fournisseur pré-sélectionné !")
+            
+            with action_col4:
+                if st.button("🛒 Bon d'Achat", use_container_width=True, key=f"liste_ba_fournisseur_{selected_fournisseur_id}"):
+                    # Pré-sélectionner le fournisseur dans l'onglet BA
+                    st.session_state.preselected_fournisseur_id = selected_fournisseur_id
+                    st.info("💡 Consultez l'onglet 'Bon d'Achat' - Fournisseur pré-sélectionné !")
+            
+            with action_col5:
+                if st.button("🗑️ Supprimer", use_container_width=True, key=f"liste_delete_fournisseur_{selected_fournisseur_id}"):
+                    # Demander confirmation avant suppression
+                    if st.session_state.get(f'confirm_delete_{selected_fournisseur_id}', False):
+                        if gestionnaire.delete_fournisseur(selected_fournisseur_id):
+                            st.success("Fournisseur supprimé avec succès !")
+                            if f'confirm_delete_{selected_fournisseur_id}' in st.session_state:
+                                del st.session_state[f'confirm_delete_{selected_fournisseur_id}']
+                            st.rerun()
+                        else:
+                            st.error("Erreur lors de la suppression.")
+                    else:
+                        st.session_state[f'confirm_delete_{selected_fournisseur_id}'] = True
+                        st.warning("⚠️ Cliquez à nouveau pour confirmer la suppression définitive.")
+                        st.rerun()
+
+def render_fournisseurs_performance(gestionnaire):
+    """Analyse des performances des fournisseurs - VERSION SIMPLIFIÉE"""
+    st.markdown("### 📈 Analyse des Performances")
+    
+    fournisseurs = gestionnaire.get_all_fournisseurs()
+    
+    if not fournisseurs:
+        st.info("Aucun fournisseur disponible pour l'analyse.")
+        return
+    
+    # Sélection du fournisseur et période
+    perf_col1, perf_col2 = st.columns(2)
+    
+    with perf_col1:
+        selected_fournisseur_id = st.selectbox(
+            "Fournisseur à analyser:",
+            options=[f.get('id') for f in fournisseurs],
+            format_func=lambda fid: next((f.get('nom', 'N/A') for f in fournisseurs if f.get('id') == fid), ''),
+            key="performance_fournisseur_select"
+        )
+    
+    with perf_col2:
+        periode_jours = st.selectbox(
+            "Période d'analyse:",
+            options=[30, 90, 180, 365, 730],
+            format_func=lambda d: f"{d} jours" if d < 365 else f"{d//365} an(s)",
+            index=3,  # 365 jours par défaut
+            key="performance_periode_select"
+        )
+    
+    if selected_fournisseur_id:
+        # Récupération des données de performance
+        performance = gestionnaire.get_fournisseur_performance(selected_fournisseur_id, periode_jours)
+        fournisseur_info = gestionnaire.get_fournisseur_by_id(selected_fournisseur_id)
+        
+        if not performance:
+            st.warning("Aucune donnée de performance disponible pour cette période.")
+            return
+        
+        # Affichage du nom du fournisseur
+        st.markdown(f"#### 🏪 {fournisseur_info.get('nom', 'N/A')} - {periode_jours} derniers jours")
+        
+        # Métriques de performance
+        perf_met_col1, perf_met_col2, perf_met_col3, perf_met_col4 = st.columns(4)
+        
+        with perf_met_col1:
+            st.metric("📦 Total Commandes", performance.get('total_commandes', 0))
+        with perf_met_col2:
+            montant_total = performance.get('montant_total', 0) or 0
+            st.metric("💰 Montant Total", f"{montant_total:,.0f} $")
+        with perf_met_col3:
+            montant_moyen = performance.get('montant_moyen', 0) or 0
+            st.metric("📊 Commande Moyenne", f"{montant_moyen:,.0f} $")
+        with perf_met_col4:
+            taux_ponctualite = performance.get('taux_ponctualite', 0) or 0
+            couleur_ponctualite = "normal" if taux_ponctualite >= 90 else "inverse" if taux_ponctualite >= 70 else "off"
+            st.metric("⏰ Ponctualité", f"{taux_ponctualite:.1f}%", delta_color=couleur_ponctualite)
+        
+        # Détails supplémentaires
+        if performance.get('total_livraisons', 0) > 0:
+            st.markdown("---")
+            st.markdown("#### 📊 Détails Livraisons")
+            
+            detail_col1, detail_col2, detail_col3 = st.columns(3)
+            
+            with detail_col1:
+                st.metric("🚚 Total Livraisons", performance.get('total_livraisons', 0))
+            with detail_col2:
+                livraisons_temps = performance.get('livraisons_temps', 0)
+                st.metric("✅ Livrées à Temps", livraisons_temps)
+            with detail_col3:
+                retard_moyen = performance.get('retard_moyen_jours', 0) or 0
+                if retard_moyen > 0:
+                    st.metric("⏱️ Retard Moyen", f"{retard_moyen:.1f} jours", delta_color="inverse")
+                else:
+                    st.metric("⏱️ Retard Moyen", "0 jour", delta_color="normal")
+        
+        # Évaluation et notes
+        st.markdown("---")
+        st.markdown("#### ⭐ Évaluation Qualité")
+        
+        eval_col1, eval_col2 = st.columns(2)
+        
+        with eval_col1:
+            evaluation_actuelle = fournisseur_info.get('evaluation_qualite', 5)
+            st.metric("Note Actuelle", f"{evaluation_actuelle}/10")
+            
+            # Barre de progression pour l'évaluation
+            progress_value = evaluation_actuelle / 10
+            st.progress(progress_value)
+            
+            if evaluation_actuelle >= 8:
+                st.success("🏆 Excellent fournisseur")
+            elif evaluation_actuelle >= 6:
+                st.info("👍 Bon fournisseur")
+            else:
+                st.warning("⚠️ Fournisseur à surveiller")
+        
+        with eval_col2:
+            if fournisseur_info.get('notes_evaluation'):
+                st.markdown("**📝 Notes d'évaluation:**")
+                st.markdown(f"_{fournisseur_info['notes_evaluation']}_")
+            
+            if fournisseur_info.get('certifications'):
+                st.markdown("**🏅 Certifications:**")
+                st.markdown(f"_{fournisseur_info['certifications']}_")
+        
+        # Recommandations automatiques
+        st.markdown("---")
+        st.markdown("#### 💡 Recommandations")
+        
+        recommendations = []
+        
+        if taux_ponctualite < 70:
+            recommendations.append("🚨 Ponctualité faible - Renégocier les délais de livraison")
+        elif taux_ponctualite < 90:
+            recommendations.append("⚠️ Ponctualité moyenne - Suivre de près les prochaines livraisons")
+        
+        if evaluation_actuelle < 6:
+            recommendations.append("📉 Note qualité faible - Prévoir une évaluation approfondie")
+        
+        if performance.get('total_commandes', 0) == 0:
+            recommendations.append("📦 Aucune commande récente - Évaluer la pertinence du partenariat")
+        
+        if not recommendations:
+            recommendations.append("✅ Performance satisfaisante - Continuer le partenariat")
+        
+        for rec in recommendations:
+            st.markdown(f"• {rec}")
+
+def render_fournisseurs_categories(gestionnaire):
+    """Gestion par catégories de fournisseurs - VERSION SIMPLIFIÉE"""
+    st.markdown("### 🏷️ Gestion par Catégories")
+    
+    categories = gestionnaire.get_categories_disponibles()
+    
+    if not categories:
+        st.info("Aucune catégorie de fournisseurs définie.")
+        st.markdown("💡 Les catégories sont créées automatiquement lors de l'ajout de fournisseurs.")
+        return
+    
+    # Statistiques par catégorie
+    cat_col1, cat_col2 = st.columns(2)
+    
+    with cat_col1:
+        st.markdown("#### 📊 Répartition par Catégorie")
+        
+        cat_stats = {}
+        for category in categories:
+            fournisseurs_cat = gestionnaire.get_fournisseurs_by_category(category)
+            cat_stats[category] = len(fournisseurs_cat)
+        
+        # Graphique en barres
+        if cat_stats:
+            fig_cat_bar = px.bar(
+                x=list(cat_stats.keys()),
+                y=list(cat_stats.values()),
+                title="Nombre de Fournisseurs par Catégorie",
+                labels={'x': 'Catégorie', 'y': 'Nombre de Fournisseurs'}
+            )
+            fig_cat_bar.update_layout(
+                plot_bgcolor='rgba(0,0,0,0)', 
+                paper_bgcolor='rgba(0,0,0,0)',
+                title_x=0.5
+            )
+            st.plotly_chart(fig_cat_bar, use_container_width=True)
+    
+    with cat_col2:
+        st.markdown("#### 🔍 Explorer par Catégorie")
+        
+        selected_category = st.selectbox(
+            "Sélectionner une catégorie:",
+            categories,
+            key="category_explorer_select"
+        )
+        
+        if selected_category:
+            fournisseurs_cat = gestionnaire.get_fournisseurs_by_category(selected_category)
+            
+            st.markdown(f"**{len(fournisseurs_cat)} fournisseur(s) dans '{selected_category}'**")
+            
+            for fournisseur in fournisseurs_cat:
+                with st.container():
+                    st.markdown(f"""
+                    <div style='border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; background-color: #f9f9f9;'>
+                        <h5 style='margin: 0 0 0.5rem 0;'>🏪 {fournisseur.get('nom', 'N/A')}</h5>
+                        <p style='margin: 0; color: #666;'>
+                            <strong>Secteur:</strong> {fournisseur.get('secteur', 'N/A')} | 
+                            <strong>Évaluation:</strong> ⭐ {fournisseur.get('evaluation_qualite', 0)}/10
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+    
+    # Liste détaillée des catégories
+    st.markdown("---")
+    st.markdown("#### 📋 Vue d'Ensemble des Catégories")
+    
+    categories_data = []
+    for category in categories:
+        fournisseurs_cat = gestionnaire.get_fournisseurs_by_category(category)
+        
+        if fournisseurs_cat:
+            evaluations = [f.get('evaluation_qualite', 0) for f in fournisseurs_cat if f.get('evaluation_qualite')]
+            eval_moyenne = sum(evaluations) / len(evaluations) if evaluations else 0
+            
+            delais = [f.get('delai_livraison_moyen', 0) for f in fournisseurs_cat if f.get('delai_livraison_moyen')]
+            delai_moyen = sum(delais) / len(delais) if delais else 0
+            
+            categories_data.append({
+                '🏷️ Catégorie': category,
+                '🏪 Nb Fournisseurs': len(fournisseurs_cat),
+                '⭐ Éval. Moyenne': f"{eval_moyenne:.1f}/10",
+                '📦 Délai Moyen': f"{delai_moyen:.0f} jours"
+            })
+    
+    if categories_data:
+        st.dataframe(pd.DataFrame(categories_data), use_container_width=True)
+
+def render_fournisseur_form(gestionnaire, fournisseur_data=None):
+    """Formulaire de création/modification d'un fournisseur - VERSION NETTOYÉE"""
+    is_edit = fournisseur_data is not None
+    title = "✏️ Modifier Fournisseur" if is_edit else "➕ Nouveau Fournisseur"
+    
+    st.markdown(f"<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown(f"### {title}")
+    
+    with st.form("fournisseur_form", clear_on_submit=not is_edit):
+        # Sélection de l'entreprise (obligatoire)
+        companies = st.session_state.erp_db.get_companies_by_type()
+        
+        if is_edit:
+            current_company_id = fournisseur_data.get('company_id')
+            company_options = [(c['id'], c['nom']) for c in companies]
+            default_index = next((i for i, (cid, _) in enumerate(company_options) if cid == current_company_id), 0)
+        else:
+            company_options = [(c['id'], c['nom']) for c in companies]
+            default_index = 0
+        
+        if not company_options:
+            st.error("Aucune entreprise disponible. Créez d'abord une entreprise dans le module CRM.")
+            st.stop()
+        
+        selected_company_id = st.selectbox(
+            "Entreprise *:",
+            options=[cid for cid, _ in company_options],
+            format_func=lambda cid: next((nom for id_c, nom in company_options if id_c == cid), ""),
+            index=default_index,
+            help="Sélectionnez l'entreprise à associer comme fournisseur"
+        )
+        
+        # Informations fournisseur
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # CODE FOURNISSEUR AUTOMATIQUE
+            if is_edit:
+                code_fournisseur = fournisseur_data.get('code_fournisseur', '')
+                st.text_input(
+                    "Code Fournisseur:",
+                    value=code_fournisseur,
+                    disabled=True,
+                    help="Code généré automatiquement lors de la création"
+                )
+            else:
+                code_fournisseur = gestionnaire.generate_fournisseur_code()
+                st.text_input(
+                    "Code Fournisseur:",
+                    value=code_fournisseur,
+                    disabled=True,
+                    help="Code généré automatiquement"
+                )
+            
+            # CATÉGORIE CONSTRUCTION QUÉBEC
+            categorie_produits = st.selectbox(
+                "Catégorie de Produits:",
+                options=[''] + GestionnaireFournisseurs.CATEGORIES_CONSTRUCTION,
+                index=0 if not is_edit else (
+                    GestionnaireFournisseurs.CATEGORIES_CONSTRUCTION.index(fournisseur_data.get('categorie_produits', '')) + 1
+                    if fournisseur_data.get('categorie_produits', '') in GestionnaireFournisseurs.CATEGORIES_CONSTRUCTION
+                    else 0
+                ),
+                help="Sélectionnez la catégorie de produits/services construction"
+            )
+            
+            delai_livraison = st.number_input(
+                "Délai de Livraison (jours):",
+                min_value=1,
+                max_value=365,
+                value=fournisseur_data.get('delai_livraison_moyen', 14) if is_edit else 14,
+                help="Délai moyen de livraison en jours"
+            )
+            
+            evaluation_qualite = st.slider(
+                "Évaluation Qualité:",
+                min_value=1,
+                max_value=10,
+                value=fournisseur_data.get('evaluation_qualite', 5) if is_edit else 5,
+                help="Note sur 10 pour la qualité du fournisseur"
+            )
+        
+        with col2:
+            conditions_paiement = st.text_input(
+                "Conditions de Paiement:",
+                value=fournisseur_data.get('conditions_paiement', '30 jours net') if is_edit else '30 jours net',
+                help="Ex: 30 jours net, Comptant, 60 jours fin de mois..."
+            )
+            
+            contact_commercial = st.text_input(
+                "Contact Commercial:",
+                value=fournisseur_data.get('contact_commercial', '') if is_edit else '',
+                help="Nom du contact commercial principal"
+            )
+            
+            contact_technique = st.text_input(
+                "Contact Technique:",
+                value=fournisseur_data.get('contact_technique', '') if is_edit else '',
+                help="Nom du contact technique principal"
+            )
+        
+        # Champs texte longs
+        st.markdown("**Certifications Construction:**")
+        selected_certifications = []
+        
+        # Si en édition, parser les certifications existantes
+        if is_edit and fournisseur_data.get('certifications'):
+            existing_certs = [cert.strip() for cert in fournisseur_data.get('certifications', '').split(',')]
+        else:
+            existing_certs = []
+        
+        # Créer une checkbox pour chaque certification
+        cert_cols = st.columns(3)
+        for idx, cert in enumerate(GestionnaireFournisseurs.CERTIFICATIONS_CONSTRUCTION):
+            with cert_cols[idx % 3]:
+                if st.checkbox(cert, value=cert in existing_certs, key=f"cert_{idx}"):
+                    selected_certifications.append(cert)
+        
+        # Champ pour certifications additionnelles
+        autres_certifications = st.text_input(
+            "Autres certifications:",
+            value='',
+            help="Ajoutez d'autres certifications séparées par des virgules"
+        )
+        
+        notes_evaluation = st.text_area(
+            "Notes d'Évaluation:",
+            value=fournisseur_data.get('notes_evaluation', '') if is_edit else '',
+            help="Notes et commentaires sur le fournisseur"
+        )
+        
+        # Boutons
+        st.markdown("---")
+        btn_col1, btn_col2 = st.columns(2)
+        
+        with btn_col1:
+            submit_label = "💾 Sauvegarder" if is_edit else "➕ Créer Fournisseur"
+            submitted = st.form_submit_button(submit_label, use_container_width=True)
+        
+        with btn_col2:
+            cancelled = st.form_submit_button("❌ Annuler", use_container_width=True)
+        
+        # Traitement du formulaire
+        if submitted:
+            if not code_fournisseur:
+                st.error("Erreur de génération du code fournisseur.")
+            else:
+                # Préparation des données (sans est_actif)
+                # Combiner les certifications sélectionnées et les autres
+                all_certifications = selected_certifications
+                if autres_certifications:
+                    all_certifications.extend([c.strip() for c in autres_certifications.split(',') if c.strip()])
+                certifications_str = ', '.join(all_certifications)
+                
+                fournisseur_form_data = {
+                    'code_fournisseur': code_fournisseur,
+                    'categorie_produits': categorie_produits if categorie_produits else None,
+                    'delai_livraison_moyen': delai_livraison,
+                    'conditions_paiement': conditions_paiement,
+                    'evaluation_qualite': evaluation_qualite,
+                    'contact_commercial': contact_commercial,
+                    'contact_technique': contact_technique,
+                    'certifications': certifications_str,
+                    'notes_evaluation': notes_evaluation
+                }
+                
+                # Création ou modification
+                if is_edit:
+                    success = gestionnaire.update_fournisseur(fournisseur_data['id'], fournisseur_form_data)
+                    if success:
+                        st.success("✅ Fournisseur modifié avec succès !")
+                        st.session_state.fournisseur_action = None
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de la modification.")
+                else:
+                    new_id = gestionnaire.create_fournisseur(selected_company_id, fournisseur_form_data)
+                    if new_id:
+                        st.success(f"✅ Fournisseur créé avec succès ! (ID: {new_id}, Code: {code_fournisseur})")
+                        st.session_state.fournisseur_action = None
+                        st.rerun()
+                    else:
+                        st.error("❌ Erreur lors de la création.")
+        
+        if cancelled:
+            st.session_state.fournisseur_action = None
+            st.rerun()
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+def render_fournisseur_details(gestionnaire, fournisseur_data):
+    """Affichage détaillé d'un fournisseur - VERSION NETTOYÉE"""
+    if not fournisseur_data:
+        st.error("Fournisseur non trouvé.")
+        return
+    
+    st.markdown("<div class='section-card'>", unsafe_allow_html=True)
+    st.markdown(f"### 🏪 {fournisseur_data.get('nom', 'N/A')}")
+    
+    # Bouton fermer
+    if st.button("✖️ Fermer", key="close_fournisseur_details"):
+        st.session_state.fournisseur_action = None
+        st.rerun()
+    
+    # Informations générales
+    st.markdown("#### 📋 Informations Générales")
+    
+    info_col1, info_col2 = st.columns(2)
+    
+    with info_col1:
+        st.markdown(f"""
+        **🆔 ID Fournisseur:** {fournisseur_data.get('id', 'N/A')}
+        
+        **📋 Code:** {fournisseur_data.get('code_fournisseur', 'N/A')}
+        
+        **🏷️ Catégorie:** {fournisseur_data.get('categorie_produits', 'N/A')}
+        
+        **🏢 Secteur:** {fournisseur_data.get('secteur', 'N/A')}
+        """)
+    
+    with info_col2:
+        st.markdown(f"""
+        **⭐ Évaluation:** {fournisseur_data.get('evaluation_qualite', 0)}/10
+        
+        **📦 Délai Livraison:** {fournisseur_data.get('delai_livraison_moyen', 0)} jours
+        
+        **💳 Conditions Paiement:** {fournisseur_data.get('conditions_paiement', 'N/A')}
+        
+        **👨‍💼 Contact Commercial:** {fournisseur_data.get('contact_commercial', 'N/A')}
+        
+        **🔧 Contact Technique:** {fournisseur_data.get('contact_technique', 'N/A')}
+        """)
+    
+    # Informations entreprise
+    st.markdown("---")
+    st.markdown("#### 🏢 Informations Entreprise")
+    
+    entreprise_col1, entreprise_col2 = st.columns(2)
+    
+    with entreprise_col1:
+        st.markdown(f"""
+        **🏢 Nom:** {fournisseur_data.get('nom', 'N/A')}
+        
+        **📍 Adresse:** {fournisseur_data.get('adresse', 'N/A')}
+        """)
+    
+    with entreprise_col2:
+        st.markdown(f"""
+        **🌐 Site Web:** {fournisseur_data.get('site_web', 'N/A')}
+        
+        **📝 Notes Entreprise:** {fournisseur_data.get('company_notes', 'N/A')}
+        """)
+    
+    # Certifications et évaluations
+    if fournisseur_data.get('certifications') or fournisseur_data.get('notes_evaluation'):
+        st.markdown("---")
+        st.markdown("#### 🏅 Certifications et Évaluations")
+        
+        if fournisseur_data.get('certifications'):
+            st.markdown("**🏅 Certifications:**")
+            st.markdown(f"_{fournisseur_data['certifications']}_")
+        
+        if fournisseur_data.get('notes_evaluation'):
+            st.markdown("**📝 Notes d'Évaluation:**")
+            st.markdown(f"_{fournisseur_data['notes_evaluation']}_")
+    
+    # Performance rapide
+    st.markdown("---")
+    st.markdown("#### 📊 Performance (365 derniers jours)")
+    
+    performance = gestionnaire.get_fournisseur_performance(fournisseur_data['id'], 365)
+    
+    if performance:
+        perf_col1, perf_col2, perf_col3 = st.columns(3)
+        
+        with perf_col1:
+            st.metric("📦 Commandes", performance.get('total_commandes', 0))
+        with perf_col2:
+            montant = performance.get('montant_total', 0) or 0
+            st.metric("💰 Montant Total", f"{montant:,.0f} $")
+        with perf_col3:
+            ponctualite = performance.get('taux_ponctualite', 0) or 0
+            st.metric("⏰ Ponctualité", f"{ponctualite:.1f}%")
+    else:
+        st.info("Aucune donnée de performance disponible.")
+    
+    # Actions rapides
+    st.markdown("---")
+    st.markdown("#### ⚡ Actions Rapides")
+    
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+    
+    with action_col1:
+        if st.button("✏️ Modifier", use_container_width=True, key="details_edit_from_details"):
+            st.session_state.fournisseur_action = "edit_fournisseur"
+            st.rerun()
+    
+    with action_col2:
+        if st.button("📊 Voir Performance", use_container_width=True, key="details_perf_from_details"):
+            st.info("💡 Consultez l'onglet 'Performances' pour l'analyse complète.")
+    
+    with action_col3:
+        if st.button("📋 Créer Demande Prix", use_container_width=True, key="details_create_dp_from_details"):
+            st.session_state.preselected_fournisseur_id = fournisseur_data.get('id')
+            st.info("💡 Consultez l'onglet 'Demande de Prix' - Fournisseur pré-sélectionné !")
+    
+    with action_col4:
+        if st.button("🛒 Créer Bon d'Achat", use_container_width=True, key="details_create_ba_from_details"):
+            st.session_state.preselected_fournisseur_id = fournisseur_data.get('id')
+            st.info("💡 Consultez l'onglet 'Bon d'Achat' - Fournisseur pré-sélectionné !")
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# =========================================================================
+# FONCTIONS UTILITAIRES ET D'INTÉGRATION PRODUITS
+# =========================================================================
+
+def check_product_integration_status(gestionnaire):
+    """Vérifie le statut de l'intégration avec le module Produits"""
+    if gestionnaire.product_manager:
+        try:
+            # Test de connectivité
+            produits_count = len(gestionnaire.product_manager.get_all_products())
+            return {
+                'status': 'connected',
+                'message': f"✅ Module Produits connecté - {produits_count} produits disponibles",
+                'produits_count': produits_count
+            }
+        except Exception as e:
+            return {
+                'status': 'error',
+                'message': f"⚠️ Module Produits connecté mais erreur: {e}",
+                'produits_count': 0
+            }
+    else:
+        return {
+            'status': 'disconnected',
+            'message': "❌ Module Produits non disponible",
+            'produits_count': 0
+        }
+
+def sync_fournisseur_with_products(gestionnaire, fournisseur_id):
+    """Synchronise un fournisseur avec les produits correspondants"""
+    if not gestionnaire.product_manager:
+        return []
+    
+    try:
+        fournisseur = gestionnaire.get_fournisseur_by_id(fournisseur_id)
+        if not fournisseur:
+            return []
+        
+        # Rechercher les produits du même fournisseur
+        tous_produits = gestionnaire.product_manager.get_all_products()
+        produits_fournisseur = [
+            p for p in tous_produits 
+            if p.get('fournisseur_principal', '').lower() == fournisseur.get('nom', '').lower()
+        ]
+        
+        return produits_fournisseur
+        
+    except Exception as e:
+        st.error(f"Erreur synchronisation produits: {e}")
+        return []
+
+def suggest_products_for_fournisseur(gestionnaire, fournisseur_data):
+    """Suggère des produits pour un fournisseur basé sur sa catégorie"""
+    if not gestionnaire.product_manager:
+        return []
+    
+    try:
+        categorie_fournisseur = fournisseur_data.get('categorie_produits', '')
+        if not categorie_fournisseur:
+            return []
+        
+        # Recherche de produits de même catégorie
+        tous_produits = gestionnaire.product_manager.get_all_products()
+        produits_suggeres = [
+            p for p in tous_produits 
+            if categorie_fournisseur.lower() in p.get('categorie', '').lower()
+        ]
+        
+        return produits_suggeres[:10]  # Limiter à 10 suggestions
+        
+    except Exception as e:
+        st.error(f"Erreur suggestions produits: {e}")
+        return []
+
+def export_fournisseur_data_with_products(gestionnaire, fournisseur_id):
+    """Exporte les données d'un fournisseur incluant les liens produits"""
+    try:
+        fournisseur = gestionnaire.get_fournisseur_by_id(fournisseur_id)
+        if not fournisseur:
+            return None
+        
+        # Données de base
+        export_data = {
+            'fournisseur': fournisseur,
+            'performance': gestionnaire.get_fournisseur_performance(fournisseur_id, 365),
+            'formulaires': gestionnaire.get_formulaires_fournisseur(fournisseur.get('company_id')),
+        }
+        
+        # Données produits si disponibles
+        if gestionnaire.product_manager:
+            export_data['produits_lies'] = sync_fournisseur_with_products(gestionnaire, fournisseur_id)
+            export_data['produits_suggeres'] = suggest_products_for_fournisseur(gestionnaire, fournisseur)
+        
+        return export_data
+        
+    except Exception as e:
+        st.error(f"Erreur export données: {e}")
+        return None
+
+def create_rapport_fournisseur_products(gestionnaire, fournisseur_id):
+    """Crée un rapport complet d'un fournisseur avec données produits"""
+    
+    st.markdown("### 📊 Rapport Fournisseur avec Intégration Produits")
+    
+    # Récupérer toutes les données
+    export_data = export_fournisseur_data_with_products(gestionnaire, fournisseur_id)
+    
+    if not export_data:
+        st.error("Impossible de générer le rapport.")
+        return
+    
+    fournisseur = export_data['fournisseur']
+    performance = export_data['performance']
+    
+    st.markdown(f"#### 🏪 {fournisseur.get('nom', 'N/A')}")
+    
+    # Section 1: Informations de base
+    with st.expander("📋 Informations de Base", expanded=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Code:** {fournisseur.get('code_fournisseur')}")
+            st.write(f"**Catégorie:** {fournisseur.get('categorie_produits')}")
+            st.write(f"**Évaluation:** {fournisseur.get('evaluation_qualite')}/10")
+        with col2:
+            st.write(f"**Délai:** {fournisseur.get('delai_livraison_moyen')} jours")
+            st.write(f"**Conditions:** {fournisseur.get('conditions_paiement')}")
+    
+    # Section 2: Performance
+    if performance:
+        with st.expander("📈 Performance (365 derniers jours)", expanded=True):
+            perf_col1, perf_col2, perf_col3 = st.columns(3)
+            with perf_col1:
+                st.metric("Commandes", performance.get('total_commandes', 0))
+            with perf_col2:
+                montant = performance.get('montant_total', 0) or 0
+                st.metric("Montant Total", f"{montant:,.0f} $")
+            with perf_col3:
+                ponctualite = performance.get('taux_ponctualite', 0) or 0
+                st.metric("Ponctualité", f"{ponctualite:.1f}%")
+    
+    # Section 3: Produits liés
+    if 'produits_lies' in export_data and export_data['produits_lies']:
+        with st.expander("🔗 Produits Liés", expanded=True):
+            produits_lies = export_data['produits_lies']
+            st.write(f"**{len(produits_lies)} produit(s) trouvé(s) dans le catalogue:**")
+            
+            for produit in produits_lies:
+                st.markdown(f"• **{produit.get('code_produit')}** - {produit.get('nom')} ({produit.get('prix_unitaire', 0):.2f} $)")
+    
+    # Section 4: Suggestions produits
+    if 'produits_suggeres' in export_data and export_data['produits_suggeres']:
+        with st.expander("💡 Suggestions de Produits", expanded=False):
+            produits_suggeres = export_data['produits_suggeres']
+            st.write(f"**{len(produits_suggeres)} produit(s) suggéré(s) basé sur la catégorie:**")
+            
+            for produit in produits_suggeres:
+                st.markdown(f"• **{produit.get('code_produit')}** - {produit.get('nom')} ({produit.get('categorie')})")
+    
+    # Section 5: Historique des commandes
+    formulaires = export_data.get('formulaires', [])
+    if formulaires:
+        with st.expander("📋 Historique des Commandes", expanded=False):
+            df_formulaires = []
+            for form in formulaires:
+                metadonnees = {}
+                try:
+                    metadonnees = json.loads(form.get('metadonnees_json', '{}'))
+                except:
+                    pass
+                
+                source_catalog = "🔗 Catalogue" if metadonnees.get('source_catalog') else "📄 Manuel"
+                
+                df_formulaires.append({
+                    'Numéro': form.get('numero_document'),
+                    'Type': form.get('type_formulaire'),
+                    'Statut': form.get('statut'),
+                    'Date': pd.to_datetime(form.get('date_creation')).strftime('%d/%m/%Y'),
+                    'Source': source_catalog
+                })
+            
+            if df_formulaires:
+                st.dataframe(pd.DataFrame(df_formulaires), use_container_width=True)
+
+# =========================================================================
+# FONCTION D'INITIALISATION PRINCIPALE AVEC PRODUITS
+# =========================================================================
+
+def initialize_fournisseurs_with_products(db, crm_manager=None, product_manager=None):
+    """Initialise le module fournisseurs avec intégration produits"""
+    
+    # Créer le gestionnaire
+    gestionnaire = GestionnaireFournisseurs(db, crm_manager, product_manager)
+    
+    # Vérifier l'intégration produits
+    product_status = check_product_integration_status(gestionnaire)
+    
+    return {
+        'gestionnaire': gestionnaire,
+        'product_status': product_status,
+        'integration_active': product_status['status'] == 'connected'
+    }
+
+if __name__ == "__main__":
+    # Point d'entrée pour test standalone
+    st.set_page_config(layout="wide", page_title="Fournisseurs + Produits + Export HTML")
+    
+    # Simuler l'environnement pour test
+    if 'erp_db' not in st.session_state:
+        st.error("Base de données ERP non initialisée")
+        st.stop()
+    
+    # Lancer la page
+    show_fournisseurs_page()

@@ -1,0 +1,7108 @@
+import sqlite3
+import json
+import os
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any
+import logging
+import shutil
+from pathlib import Path
+
+# Configuration du logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class ERPDatabase:
+    """
+    Gestionnaire de base de données SQLite unifié pour ERP Production DG Inc.
+    VERSION CONSOLIDÉE + INTERFACE UNIFIÉE TIMETRACKER + POSTES + MODULE PRODUCTION + INTÉGRATION OPERATIONS ↔ BT
+    VERSION COMMUNICANTE + MÉTHODES TIMETRACKER UNIFIÉES
+    
+    Remplace tous les fichiers JSON par une base de données relationnelle cohérente :
+    - projets_data.json → tables projects, operations, materials
+    - crm_data.json → tables companies, contacts, interactions  
+    - employees_data.json → tables employees, employee_competences
+    - inventaire_v2.json → tables inventory_items, inventory_history
+    - timetracker.db → intégration dans base principale
+    
+    MODULE FORMULAIRES COMPLET :
+    - formulaires → table formulaires (BT, BA, BC, DP, EST)
+    - formulaire_lignes → détails des documents
+    - formulaire_validations → historique et traçabilité
+    - formulaire_pieces_jointes → gestion fichiers
+    - formulaire_templates → standardisation
+    
+    INTÉGRATION TIMETRACKER ↔ BONS DE TRAVAIL :
+    - time_entries.formulaire_bt_id → liaison directe avec formulaires BT
+    - bt_assignations → assignations employés aux BT
+    - bt_reservations_postes → réservations postes de travail
+    - Traçabilité complète des pointages par BT
+    
+    NOUVELLE INTÉGRATION OPERATIONS ↔ BONS DE TRAVAIL :
+    - operations.formulaire_bt_id → liaison opérations aux BT qui les ont créées
+    - Traçabilité des gammes de fabrication par BT
+    - Gestion unifiée des opérations de production
+    
+    INTERFACE UNIFIÉE TIMETRACKER + POSTES :
+    - Méthodes complètes de gestion des postes de travail
+    - Statistiques avancées pour l'interface fusionnée
+    - Méthodes pour gammes de fabrication
+    - Optimisations pour l'analyse de capacité
+    - Vues spécialisées pour l'interface unifiée
+    
+    MODULE PRODUCTION UNIFIÉ (ÉTAPE 3) :
+    - Gestion complète des nomenclatures (BOM)
+    - Gammes de fabrication et itinéraires
+    - Intégration inventaire ↔ production
+    - Métriques et statistiques de production
+    
+    MÉTHODES COMMUNICATION TIMETRACKER UNIFIÉES :
+    - get_employee_productivity_stats() → Statistiques employé avec BT
+    - get_unified_analytics() → Analytics fusionnés BT + TimeTracker
+    - marquer_bt_termine() → Finalisation BT avec traçabilité
+    - recalculate_all_bt_progress() → Recalcul progression basé TimeTracker
+    - sync_bt_timetracker_data() → Synchronisation données
+    - cleanup_empty_bt_sessions() → Nettoyage sessions orphelines
+    
+    CORRECTIONS AUTOMATIQUES INTÉGRÉES :
+    - Colonnes projects corrigées (date_debut_reel, date_fin_reel)
+    - Tables BT spécialisées (bt_assignations, bt_reservations_postes)
+    - Colonne formulaire_bt_id dans time_entries (ÉTAPE 2)
+    - Colonne formulaire_bt_id dans operations (NOUVEAU)
+    - Toutes les améliorations de fix_database.py
+    """
+    
+    def __init__(self, db_path: str = "erp_production_dg.db"):
+        self.db_path = db_path
+        self.backup_dir = "backup_json"
+        self.init_database()
+        logger.info(f"ERPDatabase consolidé + Interface Unifiée + Production + Operations↔BT + Communication TT initialisé : {db_path}")
+        
+        # 🆕 REMPLACEZ LA LIGNE 89 PAR CECI :
+        logger.info("🔧 DEBUG: Avant appel check_and_upgrade_schema()")
+        try:
+            self.check_and_upgrade_schema()
+            logger.info("🔧 DEBUG: Après appel check_and_upgrade_schema() - SUCCÈS")
+        except Exception as e:
+            logger.error(f"🔧 DEBUG: ERREUR dans check_and_upgrade_schema(): {e}")
+            import traceback
+            logger.error(f"🔧 DEBUG: Traceback: {traceback.format_exc()}")
+
+    # 🆕 NOUVELLE MÉTHODE À AJOUTER ICI
+    def get_schema_version(self):
+        """Récupère la version actuelle du schéma de base de données"""
+        try:
+            result = self.execute_query("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
+            if result:
+                return result[0]['version']
+            else:
+                return 0  # Version initiale
+        except Exception:
+            # Table schema_version n'existe pas encore
+            return 0
+
+    def set_schema_version(self, version):
+        """Définit la version du schéma"""
+        try:
+            # Créer la table si elle n'existe pas
+            self.execute_update('''
+                CREATE TABLE IF NOT EXISTS schema_version (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    version INTEGER NOT NULL,
+                    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    description TEXT
+                )
+            ''')
+            
+            # Insérer la nouvelle version
+            self.execute_update(
+                "INSERT INTO schema_version (version, description) VALUES (?, ?)",
+                (version, f"Schema upgraded to version {version}")
+            )
+        except Exception as e:
+            print(f"Erreur set_schema_version: {e}")
+
+    def get_all_employees(self) -> List[Dict]:
+        """Récupère tous les employés actifs"""
+        try:
+            query = '''
+                SELECT id, prenom, nom, poste, departement, statut,
+                       prenom || ' ' || nom as display_name
+                FROM employees
+                WHERE statut = 'ACTIF'
+                ORDER BY prenom, nom
+            '''
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération employés: {e}")
+            return []
+
+    def check_and_upgrade_schema(self):
+        """Vérifie et met à jour le schéma de base de données"""
+        logger.info("🔧 DEBUG: check_and_upgrade_schema() appelé")
+        
+        LATEST_SCHEMA_VERSION = 6  # 🎯 CHANGÉ pour ajouter les fonctionnalités Insightly
+        
+        current_version = self.get_schema_version()
+        logger.info(f"🔧 DEBUG: Version actuelle = {current_version}")
+        
+        if current_version < LATEST_SCHEMA_VERSION:
+            logger.info(f"🔄 Migration nécessaire: v{current_version} → v{LATEST_SCHEMA_VERSION}")
+            self.upgrade_schema(current_version, LATEST_SCHEMA_VERSION)
+        else:
+            logger.info(f"✅ Schéma à jour: v{current_version}")
+
+    def upgrade_schema(self, from_version, to_version):
+        """Applique les migrations de schéma"""
+        try:
+            logger.info(f"🔄 Migration schéma: v{from_version} → v{to_version}")
+            
+            if from_version < 1:
+                logger.info("📝 Migration v1: Corrections colonnes projects...")
+                try:
+                    # Les colonnes date_debut_reel, date_fin_reel sont déjà dans init_database()
+                    # Mais on s'assure qu'elles existent pour les anciennes bases
+                    self.execute_update("ALTER TABLE projects ADD COLUMN date_debut_reel DATE")
+                    self.execute_update("ALTER TABLE projects ADD COLUMN date_fin_reel DATE")
+                except Exception:
+                    pass  # Colonnes existent déjà
+                    
+            if from_version < 2:
+                logger.info("📝 Migration v2: Tables BT spécialisées...")
+                try:
+                    # bt_assignations → assignations employés aux BT
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS bt_assignations (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bt_id INTEGER NOT NULL,
+                            employee_id INTEGER NOT NULL,
+                            assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            role_assignment TEXT DEFAULT 'Exécutant',
+                            FOREIGN KEY (bt_id) REFERENCES formulaires(id),
+                            FOREIGN KEY (employee_id) REFERENCES employees(id)
+                        )
+                    ''')
+                    
+                    # bt_reservations_postes → réservations postes de travail
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS bt_reservations_postes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bt_id INTEGER NOT NULL,
+                            work_center_id INTEGER NOT NULL,
+                            reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            duration_hours REAL DEFAULT 0,
+                            FOREIGN KEY (bt_id) REFERENCES formulaires(id),
+                            FOREIGN KEY (work_center_id) REFERENCES work_centers(id)
+                        )
+                    ''')
+                    logger.info("✅ Tables BT spécialisées créées")
+                except Exception as e:
+                    logger.error(f"Erreur migration v2: {e}")
+                    
+            if from_version < 3:
+                logger.info("📝 Migration v3: Colonnes formulaire_bt_id...")
+                try:
+                    # Colonne BT dans time_entries (ÉTAPE 2)
+                    self.execute_update("ALTER TABLE time_entries ADD COLUMN formulaire_bt_id INTEGER")
+                    
+                    # Colonne BT dans operations (NOUVEAU)
+                    self.execute_update("ALTER TABLE operations ADD COLUMN formulaire_bt_id INTEGER")
+                    
+                    logger.info("✅ Colonnes formulaire_bt_id ajoutées")
+                except Exception as e:
+                    logger.error(f"Erreur migration v3: {e}")
+                    
+            if from_version < 4:
+                logger.info("📝 Migration v4: Améliorations finales et optimisations...")
+                try:
+                    # Index pour performance
+                    self.execute_update("CREATE INDEX IF NOT EXISTS idx_time_entries_bt_id ON time_entries(formulaire_bt_id)")
+                    self.execute_update("CREATE INDEX IF NOT EXISTS idx_operations_bt_id ON operations(formulaire_bt_id)")
+                    self.execute_update("CREATE INDEX IF NOT EXISTS idx_bt_assignations_bt_id ON bt_assignations(bt_id)")
+                    self.execute_update("CREATE INDEX IF NOT EXISTS idx_bt_reservations_bt_id ON bt_reservations_postes(bt_id)")
+                    
+                    # Mise à jour des données si nécessaire
+                    self.execute_update("UPDATE projects SET statut = 'À FAIRE' WHERE statut IS NULL OR statut = ''")
+                    self.execute_update("UPDATE projects SET priorite = 'MOYEN' WHERE priorite IS NULL OR priorite = ''")
+                    
+                    logger.info("✅ Optimisations et nettoyage appliqués")
+                except Exception as e:
+                    logger.error(f"Erreur migration v4: {e}")
+                    
+            if from_version < 5:
+                logger.info("📝 Migration v5: FORCE - Application complète de toutes les améliorations DG Inc...")
+                try:
+                    # ÉTAPE 1: Vérifier et créer colonnes manquantes
+                    logger.info("🔧 Vérification colonnes projects...")
+                    try:
+                        self.execute_update("ALTER TABLE projects ADD COLUMN date_debut_reel DATE")
+                    except Exception:
+                        pass  # Colonne existe déjà
+                    
+                    try:
+                        self.execute_update("ALTER TABLE projects ADD COLUMN date_fin_reel DATE")
+                    except Exception:
+                        pass  # Colonne existe déjà
+                    
+                    # ÉTAPE 2: Vérifier et créer tables BT spécialisées
+                    logger.info("🔧 Vérification tables BT spécialisées...")
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS bt_assignations (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bt_id INTEGER NOT NULL,
+                            employee_id INTEGER NOT NULL,
+                            assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            role_assignment TEXT DEFAULT 'Exécutant'
+                        )
+                    ''')
+                    
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS bt_reservations_postes (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            bt_id INTEGER NOT NULL,
+                            work_center_id INTEGER NOT NULL,
+                            reserved_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                            duration_hours REAL DEFAULT 0
+                        )
+                    ''')
+                    
+                    # ÉTAPE 3: Vérifier et créer colonnes formulaire_bt_id
+                    logger.info("🔧 Vérification colonnes formulaire_bt_id...")
+                    try:
+                        self.execute_update("ALTER TABLE time_entries ADD COLUMN formulaire_bt_id INTEGER")
+                    except Exception:
+                        pass  # Colonne existe déjà
+                        
+                    try:
+                        self.execute_update("ALTER TABLE operations ADD COLUMN formulaire_bt_id INTEGER")
+                    except Exception:
+                        pass  # Colonne existe déjà
+                    
+                    # ÉTAPE 4: Créer tous les index de performance
+                    logger.info("🔧 Création index de performance...")
+                    performance_indexes = [
+                        "CREATE INDEX IF NOT EXISTS idx_time_entries_bt_id ON time_entries(formulaire_bt_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_operations_bt_id ON operations(formulaire_bt_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_bt_assignations_bt_id ON bt_assignations(bt_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_bt_reservations_bt_id ON bt_reservations_postes(bt_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_projects_client_id ON projects(client_company_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_time_entries_employee ON time_entries(employee_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_operations_project ON operations(project_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_formulaires_type ON formulaires(type_formulaire)"
+                    ]
+                    
+                    for index_sql in performance_indexes:
+                        try:
+                            self.execute_update(index_sql)
+                        except Exception:
+                            pass  # Index existe peut-être déjà
+                    
+                    # ÉTAPE 5: Nettoyage et cohérence des données
+                    logger.info("🔧 Nettoyage et cohérence des données...")
+                    cleanup_queries = [
+                        "UPDATE projects SET statut = 'À FAIRE' WHERE statut IS NULL OR statut = ''",
+                        "UPDATE projects SET priorite = 'MOYEN' WHERE priorite IS NULL OR priorite = ''",
+                        "UPDATE employees SET statut = 'ACTIF' WHERE statut IS NULL OR statut = ''",
+                        "UPDATE work_centers SET statut = 'ACTIF' WHERE statut IS NULL OR statut = ''",
+                        "UPDATE formulaires SET statut = 'BROUILLON' WHERE statut IS NULL OR statut = ''"
+                    ]
+                    
+                    for cleanup_sql in cleanup_queries:
+                        try:
+                            self.execute_update(cleanup_sql)
+                        except Exception:
+                            pass  # Table peut ne pas exister
+                    
+                    # ÉTAPE 6: Vérification finale
+                    logger.info("🔧 Vérification finale de la base...")
+                    
+                    # Compter les tables principales
+                    tables_count = {}
+                    main_tables = ['projects', 'companies', 'employees', 'work_centers', 'formulaires', 'time_entries', 'operations']
+                    
+                    for table in main_tables:
+                        try:
+                            result = self.execute_query(f"SELECT COUNT(*) as count FROM {table}")
+                            tables_count[table] = result[0]['count'] if result else 0
+                        except Exception:
+                            tables_count[table] = 0
+                    
+                    logger.info(f"✅ Migration v5 terminée - Compteurs: {tables_count}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erreur migration v5: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            if from_version < 6:
+                logger.info("📝 Migration v6: Ajout fonctionnalités Insightly-style...")
+                try:
+                    # 1. Ajouter colonnes manquantes à interactions
+                    logger.info("🔧 Ajout colonne opportunity_id à interactions...")
+                    try:
+                        self.execute_update("ALTER TABLE interactions ADD COLUMN opportunity_id INTEGER")
+                    except Exception:
+                        pass  # Colonne existe déjà
+                    
+                    # 2. Ajouter colonnes manquantes à opportunities
+                    logger.info("🔧 Ajout colonnes manquantes à opportunities...")
+                    try:
+                        self.execute_update("ALTER TABLE opportunities ADD COLUMN date_derniere_activite DATETIME")
+                    except Exception:
+                        pass
+                    
+                    try:
+                        self.execute_update("ALTER TABLE opportunities ADD COLUMN projet_id INTEGER")
+                    except Exception:
+                        pass
+                    
+                    try:
+                        self.execute_update("ALTER TABLE opportunities ADD COLUMN converted_at DATETIME")
+                    except Exception:
+                        pass
+                    
+                    # 3. Ajouter colonnes manquantes à crm_activities
+                    logger.info("🔧 Ajout colonnes manquantes à crm_activities...")
+                    try:
+                        self.execute_update("ALTER TABLE crm_activities ADD COLUMN projet_id INTEGER")
+                    except Exception:
+                        pass
+                    
+                    try:
+                        self.execute_update("ALTER TABLE crm_activities ADD COLUMN rappel BOOLEAN DEFAULT FALSE")
+                    except Exception:
+                        pass
+                    
+                    try:
+                        self.execute_update("ALTER TABLE crm_activities ADD COLUMN rappel_envoye BOOLEAN DEFAULT FALSE")
+                    except Exception:
+                        pass
+                    
+                    # 4. Créer table calendar_events pour synchronisation bidirectionnelle
+                    logger.info("🔧 Création table calendar_events...")
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS calendar_events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            interaction_id INTEGER,
+                            activity_id INTEGER,
+                            opportunity_id INTEGER,
+                            projet_id INTEGER,
+                            titre TEXT NOT NULL,
+                            description TEXT,
+                            date_debut DATETIME NOT NULL,
+                            date_fin DATETIME NOT NULL,
+                            type_event TEXT CHECK(type_event IN 
+                                ('INTERACTION', 'ACTIVITE', 'OPPORTUNITE', 'PROJET', 'AUTRE')),
+                            all_day BOOLEAN DEFAULT FALSE,
+                            lieu TEXT,
+                            couleur TEXT,
+                            rappel_minutes INTEGER,
+                            recurrence_rule TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (interaction_id) REFERENCES interactions(id) ON DELETE CASCADE,
+                            FOREIGN KEY (activity_id) REFERENCES crm_activities(id) ON DELETE CASCADE,
+                            FOREIGN KEY (opportunity_id) REFERENCES opportunities(id) ON DELETE CASCADE,
+                            FOREIGN KEY (projet_id) REFERENCES projects(id) ON DELETE CASCADE
+                        )
+                    ''')
+                    
+                    # 5. Créer table workflow_rules pour automatisation
+                    logger.info("🔧 Création table workflow_rules...")
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS workflow_rules (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nom TEXT NOT NULL,
+                            description TEXT,
+                            entite_type TEXT CHECK(entite_type IN 
+                                ('OPPORTUNITY', 'INTERACTION', 'ACTIVITY', 'PROJECT')),
+                            trigger_event TEXT NOT NULL,
+                            trigger_conditions_json TEXT,
+                            actions_json TEXT NOT NULL,
+                            actif BOOLEAN DEFAULT TRUE,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    ''')
+                    
+                    # 6. Créer table workflow_logs pour traçabilité
+                    logger.info("🔧 Création table workflow_logs...")
+                    self.execute_update('''
+                        CREATE TABLE IF NOT EXISTS workflow_logs (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            workflow_rule_id INTEGER,
+                            entite_type TEXT,
+                            entite_id INTEGER,
+                            trigger_event TEXT,
+                            actions_executed TEXT,
+                            status TEXT CHECK(status IN ('SUCCESS', 'FAILED', 'PARTIAL')),
+                            error_message TEXT,
+                            executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            FOREIGN KEY (workflow_rule_id) REFERENCES workflow_rules(id)
+                        )
+                    ''')
+                    
+                    # 7. Créer index pour performance
+                    logger.info("🔧 Création index pour fonctionnalités Insightly...")
+                    new_indexes = [
+                        "CREATE INDEX IF NOT EXISTS idx_interactions_opportunity ON interactions(opportunity_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_opportunities_last_activity ON opportunities(date_derniere_activite)",
+                        "CREATE INDEX IF NOT EXISTS idx_calendar_events_dates ON calendar_events(date_debut, date_fin)",
+                        "CREATE INDEX IF NOT EXISTS idx_calendar_events_interaction ON calendar_events(interaction_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_calendar_events_activity ON calendar_events(activity_id)",
+                        "CREATE INDEX IF NOT EXISTS idx_workflow_logs_rule ON workflow_logs(workflow_rule_id)"
+                    ]
+                    
+                    for index_sql in new_indexes:
+                        try:
+                            self.execute_update(index_sql)
+                        except Exception:
+                            pass  # Index existe peut-être déjà
+                    
+                    # 8. Insérer règles workflow par défaut
+                    logger.info("🔧 Insertion règles workflow par défaut...")
+                    default_workflows = [
+                        {
+                            'nom': 'Auto-tâches changement étape opportunité',
+                            'description': 'Crée automatiquement des tâches lors du changement d\'étape',
+                            'entite_type': 'OPPORTUNITY',
+                            'trigger_event': 'STATUS_CHANGED',
+                            'trigger_conditions_json': '{}',
+                            'actions_json': '{"action": "CREATE_STAGE_TASKS"}'
+                        },
+                        {
+                            'nom': 'Suivi automatique après interaction',
+                            'description': 'Crée une activité de suivi après chaque interaction',
+                            'entite_type': 'INTERACTION',
+                            'trigger_event': 'CREATED',
+                            'trigger_conditions_json': '{"has_followup_date": true}',
+                            'actions_json': '{"action": "CREATE_FOLLOWUP_ACTIVITY"}'
+                        }
+                    ]
+                    
+                    for workflow in default_workflows:
+                        try:
+                            self.execute_update('''
+                                INSERT OR IGNORE INTO workflow_rules 
+                                (nom, description, entite_type, trigger_event, trigger_conditions_json, actions_json)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            ''', (
+                                workflow['nom'],
+                                workflow['description'],
+                                workflow['entite_type'],
+                                workflow['trigger_event'],
+                                workflow['trigger_conditions_json'],
+                                workflow['actions_json']
+                            ))
+                        except Exception as e:
+                            logger.error(f"Erreur insertion workflow: {e}")
+                    
+                    logger.info("✅ Migration v6 terminée - Fonctionnalités Insightly ajoutées")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Erreur migration v6: {e}")
+                    import traceback
+                    logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Marquer comme migré
+            self.set_schema_version(to_version)
+            logger.info(f"✅ Migration terminée: schéma v{to_version}")
+            
+        except Exception as e:
+            logger.error(f"❌ Erreur migration schéma: {e}")
+            import traceback
+            logger.error(f"Traceback complet: {traceback.format_exc()}")
+    
+    def init_database(self):
+        """Initialise toutes les tables de la base de données ERP avec corrections automatiques intégrées"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Activer les clés étrangères et optimisations SQLite
+            cursor.execute("PRAGMA foreign_keys = ON")
+            cursor.execute("PRAGMA journal_mode = WAL")
+            cursor.execute("PRAGMA synchronous = NORMAL")
+            cursor.execute("PRAGMA temp_store = memory")
+            cursor.execute("PRAGMA mmap_size = 268435456")  # 256MB
+            
+            # 1. ENTREPRISES (CRM)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS companies (
+                    id INTEGER PRIMARY KEY,
+                    nom TEXT NOT NULL,
+                    secteur TEXT,
+                    adresse TEXT,
+                    site_web TEXT,
+                    contact_principal_id INTEGER,
+                    notes TEXT,
+                    type_company TEXT DEFAULT 'CLIENT',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 2. CONTACTS (CRM)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS contacts (
+                    id INTEGER PRIMARY KEY,
+                    prenom TEXT NOT NULL,
+                    nom_famille TEXT NOT NULL,
+                    email TEXT,
+                    telephone TEXT,
+                    company_id INTEGER,
+                    role_poste TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
+                )
+            ''')
+            
+            # 3. PROJETS (Core ERP) - CORRIGÉ avec toutes les colonnes nécessaires
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS projects (
+                    id INTEGER PRIMARY KEY,
+                    nom_projet TEXT NOT NULL,
+                    client_company_id INTEGER,
+                    client_contact_id INTEGER,
+                    client_nom_cache TEXT,
+                    client_legacy TEXT,
+                    po_client TEXT,
+                    statut TEXT DEFAULT 'À FAIRE',
+                    priorite TEXT DEFAULT 'MOYEN',
+                    tache TEXT,
+                    date_soumis DATE,
+                    date_prevu DATE,
+                    date_debut_reel DATE,
+                    date_fin_reel DATE,
+                    bd_ft_estime REAL,
+                    prix_estime REAL,
+                    description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (client_company_id) REFERENCES companies(id),
+                    FOREIGN KEY (client_contact_id) REFERENCES contacts(id)
+                )
+            ''')
+            
+            # 4. EMPLOYÉS (RH)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS employees (
+                    id INTEGER PRIMARY KEY,
+                    prenom TEXT NOT NULL,
+                    nom TEXT NOT NULL,
+                    email TEXT UNIQUE,
+                    telephone TEXT,
+                    poste TEXT,
+                    departement TEXT,
+                    statut TEXT DEFAULT 'ACTIF',
+                    type_contrat TEXT DEFAULT 'CDI',
+                    date_embauche DATE,
+                    salaire REAL,
+                    manager_id INTEGER,
+                    charge_travail INTEGER DEFAULT 80,
+                    notes TEXT,
+                    photo_url TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (manager_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 5. COMPÉTENCES EMPLOYÉS
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS employee_competences (
+                    id INTEGER PRIMARY KEY,
+                    employee_id INTEGER,
+                    nom_competence TEXT,
+                    niveau TEXT,
+                    certifie BOOLEAN DEFAULT FALSE,
+                    date_obtention DATE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 6. POSTES DE TRAVAIL (61 unités)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS work_centers (
+                    id INTEGER PRIMARY KEY,
+                    nom TEXT NOT NULL UNIQUE,
+                    departement TEXT,
+                    categorie TEXT,
+                    type_machine TEXT,
+                    capacite_theorique REAL,
+                    operateurs_requis INTEGER,
+                    cout_horaire REAL,
+                    competences_requises TEXT,
+                    statut TEXT DEFAULT 'ACTIF',
+                    localisation TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 7. OPÉRATIONS (Gammes) - CORRIGÉ AVEC LIEN VERS BT
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS operations (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER,
+                    work_center_id INTEGER,
+                    formulaire_bt_id INTEGER, -- AJOUT : Lien vers le BT qui a créé l'opération
+                    sequence_number INTEGER,
+                    description TEXT,
+                    temps_estime REAL,
+                    ressource TEXT,
+                    statut TEXT DEFAULT 'À FAIRE',
+                    poste_travail TEXT,
+                    operation_legacy_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (work_center_id) REFERENCES work_centers(id),
+                    FOREIGN KEY (formulaire_bt_id) REFERENCES formulaires(id) ON DELETE SET NULL -- Si BT supprimé, l'opération reste
+                )
+            ''')
+            
+            # 8. MATÉRIAUX/BOM
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS materials (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER,
+                    material_legacy_id INTEGER,
+                    code_materiau TEXT,
+                    designation TEXT,
+                    quantite REAL,
+                    unite TEXT,
+                    prix_unitaire REAL,
+                    fournisseur TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id)
+                )
+            ''')
+            
+            # 9. INVENTAIRE
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS inventory_items (
+                    id INTEGER PRIMARY KEY,
+                    nom TEXT NOT NULL,
+                    type_produit TEXT,
+                    quantite_imperial TEXT,
+                    quantite_metric REAL,
+                    limite_minimale_imperial TEXT,
+                    limite_minimale_metric REAL,
+                    quantite_reservee_imperial TEXT,
+                    quantite_reservee_metric REAL,
+                    statut TEXT,
+                    description TEXT,
+                    notes TEXT,
+                    fournisseur_principal TEXT,
+                    code_interne TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 10. HISTORIQUE INVENTAIRE
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS inventory_history (
+                    id INTEGER PRIMARY KEY,
+                    inventory_item_id INTEGER,
+                    action TEXT,
+                    quantite_avant TEXT,
+                    quantite_apres TEXT,
+                    notes TEXT,
+                    employee_id INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (inventory_item_id) REFERENCES inventory_items(id),
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 11. INTERACTIONS CRM
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS interactions (
+                    id INTEGER PRIMARY KEY,
+                    contact_id INTEGER,
+                    company_id INTEGER,
+                    type_interaction TEXT,
+                    date_interaction DATETIME,
+                    resume TEXT,
+                    details TEXT,
+                    resultat TEXT,
+                    suivi_prevu DATE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (contact_id) REFERENCES contacts(id),
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
+                )
+            ''')
+            
+            # 12. ASSIGNATIONS PROJETS-EMPLOYÉS
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS project_assignments (
+                    project_id INTEGER,
+                    employee_id INTEGER,
+                    role_projet TEXT,
+                    date_assignation DATE DEFAULT CURRENT_DATE,
+                    PRIMARY KEY (project_id, employee_id),
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 13. TIME ENTRIES (TimeTracker Unifié) - MODIFIÉ ÉTAPE 2
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS time_entries (
+                    id INTEGER PRIMARY KEY,
+                    employee_id INTEGER,
+                    project_id INTEGER,
+                    operation_id INTEGER,
+                    formulaire_bt_id INTEGER,
+                    punch_in TIMESTAMP,
+                    punch_out TIMESTAMP,
+                    total_hours REAL,
+                    hourly_rate REAL,
+                    total_cost REAL,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (employee_id) REFERENCES employees(id),
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (operation_id) REFERENCES operations(id),
+                    FOREIGN KEY (formulaire_bt_id) REFERENCES formulaires(id)
+                )
+            ''')
+            
+            # =========================================================================
+            # MODULE FORMULAIRES - TABLES PRINCIPALES COMPLÈTES
+            # =========================================================================
+            
+            # 14. FORMULAIRES PRINCIPAUX (BT, BA, BC, DP, EST)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS formulaires (
+                    id INTEGER PRIMARY KEY,
+                    type_formulaire TEXT NOT NULL CHECK(type_formulaire IN 
+                        ('BON_TRAVAIL', 'BON_ACHAT', 'BON_COMMANDE', 'DEMANDE_PRIX', 'ESTIMATION')),
+                    numero_document TEXT UNIQUE NOT NULL,
+                    project_id INTEGER,
+                    company_id INTEGER,
+                    employee_id INTEGER,
+                    statut TEXT DEFAULT 'BROUILLON' CHECK(statut IN 
+                        ('BROUILLON', 'VALIDÉ', 'ENVOYÉ', 'APPROUVÉ', 'TERMINÉ', 'ANNULÉ')),
+                    priorite TEXT DEFAULT 'NORMAL' CHECK(priorite IN ('NORMAL', 'URGENT', 'CRITIQUE')),
+                    date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    date_echeance DATE,
+                    date_validation TIMESTAMP,
+                    montant_total REAL DEFAULT 0.0,
+                    notes TEXT,
+                    metadonnees_json TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 15. OPPORTUNITÉS DE VENTE (CRM PIPELINE)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS opportunities (
+                    id INTEGER PRIMARY KEY,
+                    nom TEXT NOT NULL,
+                    company_id INTEGER,
+                    contact_id INTEGER,
+                    montant_estime REAL DEFAULT 0.0,
+                    devise TEXT DEFAULT 'CAD',
+                    statut TEXT DEFAULT 'Prospection' CHECK(statut IN 
+                        ('Prospection', 'Qualification', 'Proposition', 'Négociation', 'Gagné', 'Perdu')),
+                    probabilite INTEGER DEFAULT 50,
+                    date_cloture_prevue DATE,
+                    date_cloture_reelle DATE,
+                    source TEXT,
+                    campagne TEXT,
+                    notes TEXT,
+                    assigned_to INTEGER,
+                    created_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    FOREIGN KEY (contact_id) REFERENCES contacts(id),
+                    FOREIGN KEY (assigned_to) REFERENCES employees(id),
+                    FOREIGN KEY (created_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 16. ACTIVITÉS CRM (TÂCHES ET ÉVÉNEMENTS)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS crm_activities (
+                    id INTEGER PRIMARY KEY,
+                    opportunity_id INTEGER,
+                    contact_id INTEGER,
+                    company_id INTEGER,
+                    interaction_id INTEGER,
+                    type_activite TEXT CHECK(type_activite IN 
+                        ('Email', 'Appel', 'Réunion', 'Tâche', 'Note', 'Visite', 'Présentation', 'Suivi')),
+                    sujet TEXT NOT NULL,
+                    description TEXT,
+                    date_activite DATETIME,
+                    duree_minutes INTEGER,
+                    statut TEXT DEFAULT 'Planifié' CHECK(statut IN 
+                        ('Planifié', 'En cours', 'Terminé', 'Annulé', 'Reporté')),
+                    priorite TEXT DEFAULT 'Normale' CHECK(priorite IN 
+                        ('Basse', 'Normale', 'Haute', 'Critique')),
+                    rappel_minutes INTEGER DEFAULT 15,
+                    lieu TEXT,
+                    assigned_to INTEGER,
+                    created_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (opportunity_id) REFERENCES opportunities(id),
+                    FOREIGN KEY (contact_id) REFERENCES contacts(id),
+                    FOREIGN KEY (company_id) REFERENCES companies(id),
+                    FOREIGN KEY (assigned_to) REFERENCES employees(id),
+                    FOREIGN KEY (created_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 17. LIGNES DE DÉTAIL DES FORMULAIRES
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS formulaire_lignes (
+                    id INTEGER PRIMARY KEY,
+                    formulaire_id INTEGER NOT NULL,
+                    sequence_ligne INTEGER NOT NULL,
+                    description TEXT NOT NULL,
+                    code_article TEXT,
+                    quantite REAL NOT NULL DEFAULT 0,
+                    unite TEXT DEFAULT 'UN',
+                    prix_unitaire REAL DEFAULT 0.0,
+                    montant_ligne REAL DEFAULT 0.0,
+                    reference_materiau INTEGER,
+                    reference_operation INTEGER,
+                    notes_ligne TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (formulaire_id) REFERENCES formulaires(id) ON DELETE CASCADE,
+                    FOREIGN KEY (reference_materiau) REFERENCES materials(id),
+                    FOREIGN KEY (reference_operation) REFERENCES operations(id)
+                )
+            ''')
+            
+            # 18. HISTORIQUE ET VALIDATIONS DES FORMULAIRES
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS formulaire_validations (
+                    id INTEGER PRIMARY KEY,
+                    formulaire_id INTEGER NOT NULL,
+                    employee_id INTEGER,
+                    type_validation TEXT NOT NULL CHECK(type_validation IN 
+                        ('CREATION', 'MODIFICATION', 'VALIDATION', 'APPROBATION', 'ENVOI', 'CHANGEMENT_STATUT', 'ANNULATION', 'TERMINAISON')),
+                    ancien_statut TEXT,
+                    nouveau_statut TEXT,
+                    commentaires TEXT,
+                    date_validation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    signature_digitale TEXT,
+                    FOREIGN KEY (formulaire_id) REFERENCES formulaires(id) ON DELETE CASCADE,
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 19. PIÈCES JOINTES AUX FORMULAIRES
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS formulaire_pieces_jointes (
+                    id INTEGER PRIMARY KEY,
+                    formulaire_id INTEGER NOT NULL,
+                    nom_fichier TEXT NOT NULL,
+                    type_fichier TEXT,
+                    taille_fichier INTEGER,
+                    chemin_fichier TEXT,
+                    description TEXT,
+                    uploaded_by INTEGER,
+                    uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (formulaire_id) REFERENCES formulaires(id) ON DELETE CASCADE,
+                    FOREIGN KEY (uploaded_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 20. TEMPLATES DE FORMULAIRES
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS formulaire_templates (
+                    id INTEGER PRIMARY KEY,
+                    type_formulaire TEXT NOT NULL,
+                    nom_template TEXT NOT NULL,
+                    description TEXT,
+                    template_json TEXT,
+                    est_actif BOOLEAN DEFAULT TRUE,
+                    created_by INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (created_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 21. FOURNISSEURS (Extension companies pour meilleure gestion)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS fournisseurs (
+                    id INTEGER PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    code_fournisseur TEXT UNIQUE,
+                    categorie_produits TEXT,
+                    delai_livraison_moyen INTEGER,
+                    conditions_paiement TEXT DEFAULT '30 jours net',
+                    evaluation_qualite INTEGER DEFAULT 5,
+                    contact_commercial TEXT,
+                    contact_technique TEXT,
+                    certifications TEXT,
+                    notes_evaluation TEXT,
+                    est_actif BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
+                )
+            ''')
+            
+            # 22. APPROVISIONNEMENTS (Suivi des commandes et livraisons)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS approvisionnements (
+                    id INTEGER PRIMARY KEY,
+                    formulaire_id INTEGER,
+                    fournisseur_id INTEGER,
+                    statut_livraison TEXT DEFAULT 'EN_ATTENTE' CHECK(statut_livraison IN 
+                        ('EN_ATTENTE', 'CONFIRMÉ', 'EN_PRODUCTION', 'EXPÉDIÉ', 'LIVRÉ', 'ANNULÉ')),
+                    date_commande DATE,
+                    date_livraison_prevue DATE,
+                    date_livraison_reelle DATE,
+                    numero_bon_livraison TEXT,
+                    quantite_commandee REAL,
+                    quantite_livree REAL,
+                    notes_livraison TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (formulaire_id) REFERENCES formulaires(id),
+                    FOREIGN KEY (fournisseur_id) REFERENCES fournisseurs(id)
+                )
+            ''')
+            
+            # =========================================================================
+            # TABLES SPÉCIALISÉES BONS DE TRAVAIL - INTÉGRÉES AUTOMATIQUEMENT
+            # =========================================================================
+            
+            # 23. ASSIGNATIONS BONS DE TRAVAIL
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bt_assignations (
+                    id INTEGER PRIMARY KEY,
+                    bt_id INTEGER,
+                    employe_id INTEGER,
+                    date_assignation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    statut TEXT DEFAULT 'ASSIGNÉ',
+                    notes_assignation TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (bt_id) REFERENCES formulaires(id),
+                    FOREIGN KEY (employe_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 24. RÉSERVATIONS POSTES DE TRAVAIL POUR BT
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bt_reservations_postes (
+                    id INTEGER PRIMARY KEY,
+                    bt_id INTEGER,
+                    work_center_id INTEGER,
+                    date_reservation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    date_prevue DATE,
+                    date_liberation TIMESTAMP,
+                    statut TEXT DEFAULT 'RÉSERVÉ',
+                    notes_reservation TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (bt_id) REFERENCES formulaires(id),
+                    FOREIGN KEY (work_center_id) REFERENCES work_centers(id)
+                )
+            ''')
+            
+            # 25. AVANCEMENT BONS DE TRAVAIL
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS bt_avancement (
+                    id INTEGER PRIMARY KEY,
+                    bt_id INTEGER NOT NULL,
+                    operation_id INTEGER,
+                    pourcentage_realise REAL DEFAULT 0.0,
+                    temps_reel REAL DEFAULT 0.0,
+                    date_debut_reel TIMESTAMP,
+                    date_fin_reel TIMESTAMP,
+                    notes_avancement TEXT,
+                    updated_by INTEGER,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (bt_id) REFERENCES formulaires(id) ON DELETE CASCADE,
+                    FOREIGN KEY (operation_id) REFERENCES operations(id),
+                    FOREIGN KEY (updated_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # =========================================================================
+            # TABLES POUR CONFORMITÉ CONSTRUCTION QUÉBEC
+            # =========================================================================
+            
+            # 26. LICENCES RBQ
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS licences_rbq (
+                    id INTEGER PRIMARY KEY,
+                    numero_licence TEXT UNIQUE NOT NULL,
+                    nom_entreprise TEXT NOT NULL,
+                    categories TEXT,
+                    date_emission DATE,
+                    date_expiration DATE,
+                    statut TEXT DEFAULT 'Active' CHECK(statut IN ('Active', 'Suspendue', 'Expirée')),
+                    cautionnement REAL DEFAULT 0.0,
+                    assurance_responsabilite REAL DEFAULT 0.0,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 27. CARTES CCQ
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS cartes_ccq (
+                    id INTEGER PRIMARY KEY,
+                    employee_id INTEGER NOT NULL,
+                    numero_carte TEXT UNIQUE NOT NULL,
+                    metier_principal TEXT NOT NULL,
+                    qualification TEXT,
+                    metiers_additionnels TEXT,
+                    heures_totales INTEGER DEFAULT 0,
+                    date_emission DATE,
+                    date_renouvellement DATE,
+                    asp_construction BOOLEAN DEFAULT FALSE,
+                    statut TEXT DEFAULT 'Active' CHECK(statut IN ('Active', 'Expirée', 'Suspendue')),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 28. ATTESTATIONS FISCALES ET CONFORMITÉ
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS attestations_conformite (
+                    id INTEGER PRIMARY KEY,
+                    type TEXT NOT NULL CHECK(type IN ('Revenu Québec', 'ARC', 'CNESST', 'CCQ', 'RBQ')),
+                    numero TEXT NOT NULL,
+                    date_emission DATE,
+                    date_expiration DATE,
+                    statut TEXT DEFAULT 'Valide' CHECK(statut IN ('Valide', 'Expirée', 'En renouvellement')),
+                    fichier_path TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            # 29. SOUS-TRAITANTS CONSTRUCTION
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sous_traitants (
+                    id INTEGER PRIMARY KEY,
+                    company_id INTEGER NOT NULL,
+                    numero_rbq TEXT,
+                    categories_rbq TEXT,
+                    licence_valide_jusqu DATE,
+                    attestation_revenu_quebec BOOLEAN DEFAULT FALSE,
+                    attestation_ccq BOOLEAN DEFAULT FALSE,
+                    attestation_cnesst BOOLEAN DEFAULT FALSE,
+                    assurance_responsabilite REAL DEFAULT 0.0,
+                    evaluation_securite INTEGER DEFAULT 5,
+                    evaluation_qualite INTEGER DEFAULT 5,
+                    specialites TEXT,
+                    notes_evaluation TEXT,
+                    est_actif BOOLEAN DEFAULT TRUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (company_id) REFERENCES companies(id)
+                )
+            ''')
+            
+            # 30. PHASES DE CONSTRUCTION
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS phases_construction (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    ordre_phase INTEGER NOT NULL,
+                    date_debut_prevue DATE,
+                    date_fin_prevue DATE,
+                    date_debut_reel DATE,
+                    date_fin_reel DATE,
+                    pourcentage_complete REAL DEFAULT 0.0,
+                    inspection_requise BOOLEAN DEFAULT FALSE,
+                    inspection_completee BOOLEAN DEFAULT FALSE,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id)
+                )
+            ''')
+            
+            # 31. INSPECTIONS DE CHANTIER
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS inspections_chantier (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL,
+                    phase_id INTEGER,
+                    type_inspection TEXT NOT NULL,
+                    date_inspection DATE,
+                    inspecteur TEXT,
+                    organisme TEXT,
+                    resultat TEXT CHECK(resultat IN ('Conforme', 'Non-conforme', 'Partiel', 'En attente')),
+                    deficiences TEXT,
+                    corrections_requises TEXT,
+                    date_limite_corrections DATE,
+                    corrections_completees BOOLEAN DEFAULT FALSE,
+                    rapport_path TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (phase_id) REFERENCES phases_construction(id)
+                )
+            ''')
+            
+            # 32. CONTRATS DE SOUS-TRAITANCE
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS contrats_sous_traitance (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL,
+                    sous_traitant_id INTEGER NOT NULL,
+                    numero_contrat TEXT UNIQUE,
+                    description_travaux TEXT,
+                    montant_contrat REAL DEFAULT 0.0,
+                    retenue_garantie REAL DEFAULT 0.1,
+                    montant_retenue REAL DEFAULT 0.0,
+                    date_debut DATE,
+                    date_fin DATE,
+                    statut TEXT DEFAULT 'En cours' CHECK(statut IN ('Brouillon', 'En cours', 'Complété', 'Annulé')),
+                    paiements_effectues REAL DEFAULT 0.0,
+                    fichier_contrat_path TEXT,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id),
+                    FOREIGN KEY (sous_traitant_id) REFERENCES sous_traitants(id)
+                )
+            ''')
+            
+            # 33. GARANTIES CONSTRUCTION
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS garanties_construction (
+                    id INTEGER PRIMARY KEY,
+                    project_id INTEGER NOT NULL,
+                    type_garantie TEXT NOT NULL CHECK(type_garantie IN ('GCR', 'APCHQ', 'Autre')),
+                    numero_dossier TEXT,
+                    date_debut DATE,
+                    date_fin DATE,
+                    montant_couverture REAL DEFAULT 0.0,
+                    statut TEXT DEFAULT 'Active' CHECK(statut IN ('Active', 'Expirée', 'Réclamation')),
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (project_id) REFERENCES projects(id)
+                )
+            ''')
+            
+            # =========================================================================
+            # INDEX POUR PERFORMANCE OPTIMALE
+            # =========================================================================
+            
+            # Index tables existantes
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_projects_client ON projects(client_company_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_projects_statut ON projects(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_projects_priorite ON projects(priorite)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_projects_dates ON projects(date_soumis, date_prevu)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_operations_project ON operations(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_operations_work_center ON operations(work_center_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_operations_bt ON operations(formulaire_bt_id)') # AJOUT : Index sur la nouvelle colonne
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_materials_project ON materials(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_entries_employee ON time_entries(employee_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_entries_project ON time_entries(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_competences_employee ON employee_competences(employee_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_companies_secteur ON companies(secteur)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_companies_type ON companies(type_company)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inventory_statut ON inventory_items(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inventory_type ON inventory_items(type_produit)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_employees_statut ON employees(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_employees_departement ON employees(departement)')
+            
+            # ÉTAPE 2 : Index pour intégration BT ↔ TimeTracker
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_time_entries_bt ON time_entries(formulaire_bt_id)')
+            
+            # Index pour module formulaires
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_type ON formulaires(type_formulaire)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_statut ON formulaires(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_project ON formulaires(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_company ON formulaires(company_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_employee ON formulaires(employee_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_numero ON formulaires(numero_document)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_date ON formulaires(date_creation)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_priorite ON formulaires(priorite)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaires_echeance ON formulaires(date_echeance)')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_lignes_formulaire ON formulaire_lignes(formulaire_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_lignes_sequence ON formulaire_lignes(formulaire_id, sequence_ligne)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_lignes_materiau ON formulaire_lignes(reference_materiau)')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_validations_formulaire ON formulaire_validations(formulaire_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_validations_employee ON formulaire_validations(employee_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_validations_date ON formulaire_validations(date_validation)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_formulaire_validations_type ON formulaire_validations(type_validation)')
+            
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_fournisseurs_company ON fournisseurs(company_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_fournisseurs_code ON fournisseurs(code_fournisseur)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_approvisionnements_formulaire ON approvisionnements(formulaire_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_approvisionnements_statut ON approvisionnements(statut_livraison)')
+            
+            # Index pour tables BT spécialisées
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_assignations_bt ON bt_assignations(bt_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_assignations_employe ON bt_assignations(employe_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_reservations_bt ON bt_reservations_postes(bt_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_reservations_work_center ON bt_reservations_postes(work_center_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_avancement_bt ON bt_avancement(bt_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_bt_avancement_operation ON bt_avancement(operation_id)')
+            
+            # INTERFACE UNIFIÉE : Index optimisés pour postes de travail
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_centers_nom ON work_centers(nom)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_centers_departement ON work_centers(departement)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_centers_statut ON work_centers(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_work_centers_categorie ON work_centers(categorie)')
+            
+            # Index pour conformité construction
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_licences_rbq_numero ON licences_rbq(numero_licence)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_licences_rbq_statut ON licences_rbq(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_licences_rbq_expiration ON licences_rbq(date_expiration)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cartes_ccq_employee ON cartes_ccq(employee_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cartes_ccq_numero ON cartes_ccq(numero_carte)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_cartes_ccq_metier ON cartes_ccq(metier_principal)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attestations_type ON attestations_conformite(type)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attestations_statut ON attestations_conformite(statut)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_attestations_expiration ON attestations_conformite(date_expiration)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sous_traitants_company ON sous_traitants(company_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_sous_traitants_rbq ON sous_traitants(numero_rbq)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_phases_project ON phases_construction(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_phases_ordre ON phases_construction(project_id, ordre_phase)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inspections_project ON inspections_chantier(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inspections_phase ON inspections_chantier(phase_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_inspections_date ON inspections_chantier(date_inspection)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_contrats_project ON contrats_sous_traitance(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_contrats_sous_traitant ON contrats_sous_traitance(sous_traitant_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_contrats_numero ON contrats_sous_traitance(numero_contrat)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_garanties_project ON garanties_construction(project_id)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_garanties_type ON garanties_construction(type_garantie)')
+            
+            # =========================================================================
+            # VUES POUR REQUÊTES COMPLEXES FRÉQUENTES
+            # =========================================================================
+            
+            # Vue complète des formulaires avec toutes les jointures
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_formulaires_complets AS
+                SELECT 
+                    f.*,
+                    c.nom as company_nom,
+                    c.secteur as company_secteur,
+                    c.adresse as company_adresse,
+                    c.type_company as company_type,
+                    e.prenom || ' ' || e.nom as employee_nom,
+                    e.poste as employee_poste,
+                    e.departement as employee_departement,
+                    p.nom_projet as project_nom,
+                    p.statut as project_statut,
+                    p.priorite as project_priorite,
+                    COUNT(fl.id) as nombre_lignes,
+                    COALESCE(SUM(fl.montant_ligne), 0) as montant_calcule,
+                    MAX(fv.date_validation) as derniere_action,
+                    (SELECT COUNT(*) FROM formulaire_validations fv2 WHERE fv2.formulaire_id = f.id) as nombre_validations
+                FROM formulaires f
+                LEFT JOIN companies c ON f.company_id = c.id
+                LEFT JOIN employees e ON f.employee_id = e.id  
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN formulaire_lignes fl ON f.id = fl.formulaire_id
+                LEFT JOIN formulaire_validations fv ON f.id = fv.formulaire_id
+                GROUP BY f.id
+            ''')
+            
+            # Vue des formulaires en attente par employé
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_formulaires_en_attente AS
+                SELECT 
+                    f.*,
+                    e.prenom || ' ' || e.nom as responsable_nom,
+                    p.nom_projet as project_nom,
+                    c.nom as company_nom,
+                    CASE 
+                        WHEN f.date_echeance < DATE('now') THEN 'RETARD'
+                        WHEN f.date_echeance <= DATE('now', '+3 days') THEN 'URGENT'
+                        ELSE 'NORMAL'
+                    END as urgence_echeance
+                FROM formulaires f
+                LEFT JOIN employees e ON f.employee_id = e.id
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN companies c ON f.company_id = c.id
+                WHERE f.statut IN ('BROUILLON', 'VALIDÉ', 'ENVOYÉ')
+                ORDER BY 
+                    CASE f.priorite 
+                        WHEN 'CRITIQUE' THEN 1
+                        WHEN 'URGENT' THEN 2
+                        WHEN 'NORMAL' THEN 3
+                    END,
+                    f.date_echeance ASC
+            ''')
+            
+            # Vue des fournisseurs avec statistiques
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_fournisseurs_stats AS
+                SELECT 
+                    c.*,
+                    f.code_fournisseur,
+                    f.categorie_produits,
+                    f.delai_livraison_moyen,
+                    f.conditions_paiement,
+                    f.evaluation_qualite,
+                    f.est_actif as fournisseur_actif,
+                    COUNT(form.id) as nombre_commandes,
+                    COALESCE(SUM(form.montant_total), 0) as montant_total_commandes,
+                    MAX(form.date_creation) as derniere_commande
+                FROM companies c
+                LEFT JOIN fournisseurs f ON c.id = f.company_id
+                LEFT JOIN formulaires form ON c.id = form.company_id AND form.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+                WHERE c.type_company = 'FOURNISSEUR' OR f.id IS NOT NULL
+                GROUP BY c.id
+            ''')
+            
+            # Vue des stocks critiques
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_stocks_critiques AS
+                SELECT 
+                    i.*,
+                    CASE 
+                        WHEN i.quantite_metric <= 0.001 THEN 'ÉPUISÉ'
+                        WHEN i.quantite_metric <= i.limite_minimale_metric THEN 'CRITIQUE'
+                        WHEN i.quantite_metric <= (i.limite_minimale_metric * 1.5) THEN 'FAIBLE'
+                        ELSE 'DISPONIBLE'
+                    END as statut_calcule,
+                    (i.limite_minimale_metric * 2) as quantite_recommandee
+                FROM inventory_items i
+                WHERE i.limite_minimale_metric > 0
+                ORDER BY 
+                    CASE 
+                        WHEN i.quantite_metric <= 0.001 THEN 1
+                        WHEN i.quantite_metric <= i.limite_minimale_metric THEN 2
+                        WHEN i.quantite_metric <= (i.limite_minimale_metric * 1.5) THEN 3
+                        ELSE 4
+                    END, i.nom
+            ''')
+            
+            # Vue complète des projets avec toutes les informations
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_projects_complets AS
+                SELECT 
+                    p.*,
+                    c.nom as client_company_nom,
+                    c.secteur as client_secteur,
+                    c.type_company as client_type,
+                    COUNT(DISTINCT o.id) as nombre_operations,
+                    COUNT(DISTINCT m.id) as nombre_materiaux,
+                    COUNT(DISTINCT pa.employee_id) as nombre_employes_assignes,
+                    COALESCE(SUM(m.quantite * m.prix_unitaire), 0) as cout_materiaux_total,
+                    COALESCE(SUM(o.temps_estime), 0) as temps_total_estime,
+                    COUNT(DISTINCT f.id) as nombre_formulaires
+                FROM projects p
+                LEFT JOIN companies c ON p.client_company_id = c.id
+                LEFT JOIN operations o ON p.id = o.project_id
+                LEFT JOIN materials m ON p.id = m.project_id
+                LEFT JOIN project_assignments pa ON p.id = pa.project_id
+                LEFT JOIN formulaires f ON p.id = f.project_id
+                GROUP BY p.id
+            ''')
+            
+            # Vue des bons de travail avec assignations
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_bons_travail_complets AS
+                SELECT 
+                    f.*,
+                    p.nom_projet,
+                    c.nom as company_nom,
+                    e.prenom || ' ' || e.nom as employee_nom,
+                    COUNT(DISTINCT bta.employe_id) as nombre_employes_assignes,
+                    COUNT(DISTINCT btr.work_center_id) as nombre_postes_reserves,
+                    GROUP_CONCAT(DISTINCT emp.prenom || ' ' || emp.nom) as employes_assignes_noms,
+                    GROUP_CONCAT(DISTINCT wc.nom) as postes_reserves_noms
+                FROM formulaires f
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN companies c ON f.company_id = c.id
+                LEFT JOIN employees e ON f.employee_id = e.id
+                LEFT JOIN bt_assignations bta ON f.id = bta.bt_id
+                LEFT JOIN bt_reservations_postes btr ON f.id = btr.bt_id
+                LEFT JOIN employees emp ON bta.employe_id = emp.id
+                LEFT JOIN work_centers wc ON btr.work_center_id = wc.id
+                WHERE f.type_formulaire = 'BON_TRAVAIL'
+                GROUP BY f.id
+            ''')
+            
+            # ÉTAPE 2 : Vue intégration TimeTracker ↔ Bons de Travail
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_bt_timetracker_integration AS
+                SELECT 
+                    f.id as bt_id,
+                    f.numero_document as bt_numero,
+                    f.statut as bt_statut,
+                    f.priorite as bt_priorite,
+                    p.nom_projet,
+                    COUNT(DISTINCT te.id) as nb_sessions_pointage,
+                    COUNT(DISTINCT te.employee_id) as nb_employes_ayant_pointe,
+                    COALESCE(SUM(te.total_hours), 0) as total_heures_pointees,
+                    COALESCE(SUM(te.total_cost), 0) as total_cout_pointage,
+                    MIN(te.punch_in) as premiere_session_pointage,
+                    MAX(te.punch_out) as derniere_session_pointage,
+                    COUNT(DISTINCT bta.employe_id) as nb_employes_assignes
+                FROM formulaires f
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN time_entries te ON f.id = te.formulaire_bt_id
+                LEFT JOIN bt_assignations bta ON f.id = bta.bt_id
+                WHERE f.type_formulaire = 'BON_TRAVAIL'
+                GROUP BY f.id
+            ''')
+            
+            # =========================================================================
+            # VUES SPÉCIALISÉES POUR INTERFACE UNIFIÉE TIMETRACKER + POSTES
+            # =========================================================================
+
+            # Vue complète des postes avec statistiques TimeTracker
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_work_centers_with_stats AS
+                SELECT 
+                    wc.*,
+                    COUNT(DISTINCT o.id) as operations_count,
+                    COUNT(DISTINCT te.id) as timetracker_entries,
+                    COALESCE(SUM(te.total_hours), 0) as total_hours_tracked,
+                    COALESCE(SUM(te.total_cost), 0) as total_revenue_generated,
+                    COALESCE(AVG(te.hourly_rate), wc.cout_horaire) as avg_actual_rate,
+                    COUNT(DISTINCT te.employee_id) as unique_employees_used,
+                    COUNT(DISTINCT o.project_id) as projects_touched,
+                    -- Calcul du taux d'utilisation (dernier mois)
+                    CASE 
+                        WHEN wc.capacite_theorique > 0 THEN
+                            ROUND((COALESCE(SUM(CASE WHEN DATE(te.punch_in) >= DATE('now', '-30 days') 
+                                             THEN te.total_hours ELSE 0 END), 0) / 
+                                  (wc.capacite_theorique * 30)) * 100, 2)
+                        ELSE 0
+                    END as utilization_rate_30d,
+                    -- Classification d'efficacité
+                    CASE 
+                        WHEN COALESCE(SUM(te.total_hours), 0) = 0 THEN 'NON_UTILISÉ'
+                        WHEN wc.capacite_theorique > 0 AND 
+                             (COALESCE(SUM(te.total_hours), 0) / (wc.capacite_theorique * 30)) >= 0.8 THEN 'TRÈS_EFFICACE'
+                        WHEN wc.capacite_theorique > 0 AND 
+                             (COALESCE(SUM(te.total_hours), 0) / (wc.capacite_theorique * 30)) >= 0.5 THEN 'EFFICACE'
+                        WHEN wc.capacite_theorique > 0 AND 
+                             (COALESCE(SUM(te.total_hours), 0) / (wc.capacite_theorique * 30)) >= 0.2 THEN 'SOUS_UTILISÉ'
+                        ELSE 'PEU_UTILISÉ'
+                    END as efficiency_classification
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+                GROUP BY wc.id
+                ORDER BY total_revenue_generated DESC
+            ''')
+
+            # Vue des gammes de fabrication avec progression
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_manufacturing_routes_progress AS
+                SELECT 
+                    p.id as project_id,
+                    p.nom_projet as project_name,
+                    p.client_nom_cache as client_name,
+                    p.statut as project_status,
+                    COUNT(o.id) as total_operations,
+                    COUNT(CASE WHEN o.statut = 'TERMINÉ' THEN 1 END) as completed_operations,
+                    COUNT(CASE WHEN o.statut = 'EN COURS' THEN 1 END) as in_progress_operations,
+                    COUNT(CASE WHEN o.statut = 'À FAIRE' THEN 1 END) as pending_operations,
+                    COALESCE(SUM(o.temps_estime), 0) as estimated_total_hours,
+                    COALESCE(SUM(te.total_hours), 0) as actual_total_hours,
+                    -- Calcul de progression
+                    CASE 
+                        WHEN COUNT(o.id) > 0 THEN
+                            ROUND((COUNT(CASE WHEN o.statut = 'TERMINÉ' THEN 1 END) * 100.0 / COUNT(o.id)), 2)
+                        ELSE 0
+                    END as completion_percentage,
+                    -- Calcul d'efficacité temps
+                    CASE 
+                        WHEN COALESCE(SUM(o.temps_estime), 0) > 0 THEN
+                            ROUND((COALESCE(SUM(te.total_hours), 0) / COALESCE(SUM(o.temps_estime), 0) * 100), 2)
+                        ELSE 0
+                    END as time_efficiency_percentage,
+                    -- Départements impliqués
+                    GROUP_CONCAT(DISTINCT wc.departement) as departments_involved,
+                    -- Coût total
+                    COALESCE(SUM(te.total_cost), 0) as total_actual_cost,
+                    -- Délais
+                    MIN(o.created_at) as route_start_date,
+                    MAX(CASE WHEN o.statut = 'TERMINÉ' THEN o.updated_at END) as route_completion_date
+                FROM projects p
+                LEFT JOIN operations o ON p.id = o.project_id
+                LEFT JOIN work_centers wc ON o.work_center_id = wc.id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+                GROUP BY p.id
+                HAVING COUNT(o.id) > 0
+                ORDER BY completion_percentage DESC
+            ''')
+
+            # Vue des goulots d'étranglement en temps réel
+            cursor.execute('''
+                CREATE VIEW IF NOT EXISTS view_bottlenecks_realtime AS
+                SELECT 
+                    wc.id, wc.nom as work_center_name, wc.departement, wc.capacite_theorique,
+                    -- Charge planifiée
+                    COUNT(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN 1 END) as pending_operations,
+                    COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) as planned_workload_hours,
+                    -- Charge en cours (pointages actifs)
+                    COUNT(CASE WHEN te.punch_out IS NULL THEN 1 END) as active_time_entries,
+                    -- Taux de charge
+                    CASE 
+                        WHEN wc.capacite_theorique > 0 THEN
+                            ROUND(((COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) / 
+                                   (wc.capacite_theorique * 5)) * 100), 2)
+                        ELSE 0
+                    END as workload_percentage,
+                    -- Classification
+                    CASE 
+                        WHEN wc.capacite_theorique > 0 AND 
+                             ((COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) / 
+                              (wc.capacite_theorique * 5)) >= 1.0) THEN 'CRITIQUE'
+                        WHEN wc.capacite_theorique > 0 AND 
+                             ((COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) / 
+                              (wc.capacite_theorique * 5)) >= 0.9) THEN 'ÉLEVÉ'
+                        WHEN wc.capacite_theorique > 0 AND 
+                             ((COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) / 
+                              (wc.capacite_theorique * 5)) >= 0.7) THEN 'MODÉRÉ'
+                        ELSE 'NORMAL'
+                    END as bottleneck_level,
+                    -- Projets affectés
+                    GROUP_CONCAT(DISTINCT p.nom_projet) as affected_projects
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id
+                LEFT JOIN projects p ON o.project_id = p.id
+                WHERE wc.statut = 'ACTIF'
+                GROUP BY wc.id
+                HAVING workload_percentage > 50  -- Seuil de surveillance
+                ORDER BY workload_percentage DESC
+            ''')
+            
+            # =========================================================================
+            # TRIGGERS POUR AUTOMATISATION
+            # =========================================================================
+            
+            # Trigger pour mise à jour automatique des montants lors d'insertion
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_update_formulaire_montant_insert
+                AFTER INSERT ON formulaire_lignes
+                FOR EACH ROW
+                BEGIN
+                    UPDATE formulaire_lignes 
+                    SET montant_ligne = NEW.quantite * NEW.prix_unitaire
+                    WHERE id = NEW.id;
+                    
+                    UPDATE formulaires 
+                    SET montant_total = (
+                        SELECT COALESCE(SUM(quantite * prix_unitaire), 0) 
+                        FROM formulaire_lignes 
+                        WHERE formulaire_id = NEW.formulaire_id
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                    WHERE id = NEW.formulaire_id;
+                END;
+            ''')
+            
+            # Trigger pour mise à jour des montants lors de modification
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_update_formulaire_montant_update
+                AFTER UPDATE ON formulaire_lignes
+                FOR EACH ROW
+                BEGIN
+                    UPDATE formulaire_lignes 
+                    SET montant_ligne = NEW.quantite * NEW.prix_unitaire
+                    WHERE id = NEW.id;
+                    
+                    UPDATE formulaires 
+                    SET montant_total = (
+                        SELECT COALESCE(SUM(quantite * prix_unitaire), 0) 
+                        FROM formulaire_lignes 
+                        WHERE formulaire_id = NEW.formulaire_id
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                    WHERE id = NEW.formulaire_id;
+                END;
+            ''')
+            
+            # Trigger pour mise à jour des montants lors de suppression
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_update_formulaire_montant_delete
+                AFTER DELETE ON formulaire_lignes
+                FOR EACH ROW
+                BEGIN
+                    UPDATE formulaires 
+                    SET montant_total = (
+                        SELECT COALESCE(SUM(quantite * prix_unitaire), 0) 
+                        FROM formulaire_lignes 
+                        WHERE formulaire_id = OLD.formulaire_id
+                    ),
+                    updated_at = CURRENT_TIMESTAMP
+                    WHERE id = OLD.formulaire_id;
+                END;
+            ''')
+            
+            # Trigger pour validation automatique des numéros de documents
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_validate_numero_document
+                BEFORE INSERT ON formulaires
+                FOR EACH ROW
+                BEGIN
+                    SELECT CASE 
+                        WHEN NEW.type_formulaire = 'BON_TRAVAIL' AND NEW.numero_document NOT LIKE 'BT-%' THEN
+                            RAISE(ABORT, 'Numéro Bon de Travail doit commencer par BT-')
+                        WHEN NEW.type_formulaire = 'BON_ACHAT' AND NEW.numero_document NOT LIKE 'BA-%' THEN
+                            RAISE(ABORT, 'Numéro Bon d''Achat doit commencer par BA-')
+                        WHEN NEW.type_formulaire = 'BON_COMMANDE' AND NEW.numero_document NOT LIKE 'BC-%' THEN
+                            RAISE(ABORT, 'Numéro Bon de Commande doit commencer par BC-')
+                        WHEN NEW.type_formulaire = 'DEMANDE_PRIX' AND NEW.numero_document NOT LIKE 'DP-%' THEN
+                            RAISE(ABORT, 'Numéro Demande de Prix doit commencer par DP-')
+                        WHEN NEW.type_formulaire = 'ESTIMATION' AND NEW.numero_document NOT LIKE 'EST-%' THEN
+                            RAISE(ABORT, 'Numéro Estimation doit commencer par EST-')
+                    END;
+                END;
+            ''')
+            
+            # Trigger pour mise à jour automatique du champ updated_at
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_formulaires_updated_at
+                AFTER UPDATE ON formulaires
+                FOR EACH ROW
+                BEGIN
+                    UPDATE formulaires 
+                    SET updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = NEW.id;
+                END;
+            ''')
+            
+            # Trigger pour mise à jour automatique du statut inventaire
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_update_inventory_status
+                AFTER UPDATE OF quantite_metric ON inventory_items
+                FOR EACH ROW
+                BEGIN
+                    UPDATE inventory_items 
+                    SET statut = CASE
+                        WHEN NEW.quantite_metric <= 0.001 THEN 'ÉPUISÉ'
+                        WHEN NEW.quantite_metric <= NEW.limite_minimale_metric THEN 'CRITIQUE'
+                        WHEN NEW.quantite_metric <= (NEW.limite_minimale_metric * 1.5) THEN 'FAIBLE'
+                        ELSE 'DISPONIBLE'
+                    END,
+                    updated_at = CURRENT_TIMESTAMP
+                    WHERE id = NEW.id AND NEW.limite_minimale_metric > 0;
+                END;
+            ''')
+            
+            # Trigger pour enregistrement automatique des modifications d'inventaire
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_inventory_history
+                AFTER UPDATE OF quantite_metric ON inventory_items
+                FOR EACH ROW
+                WHEN OLD.quantite_metric != NEW.quantite_metric
+                BEGIN
+                    INSERT INTO inventory_history (inventory_item_id, action, quantite_avant, quantite_apres, notes)
+                    VALUES (NEW.id, 'MODIFICATION', CAST(OLD.quantite_metric AS TEXT), CAST(NEW.quantite_metric AS TEXT), 'Modification automatique');
+                END;
+            ''')
+            
+            # Trigger pour mise à jour automatique des timestamps projects
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_projects_updated_at
+                AFTER UPDATE ON projects
+                FOR EACH ROW
+                BEGIN
+                    UPDATE projects 
+                    SET updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = NEW.id;
+                END;
+            ''')
+            
+            # Trigger pour enregistrement automatique des validations de changement de statut
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_auto_log_status_change
+                AFTER UPDATE OF statut ON formulaires
+                FOR EACH ROW
+                WHEN OLD.statut != NEW.statut
+                BEGIN
+                    INSERT INTO formulaire_validations (formulaire_id, type_validation, ancien_statut, nouveau_statut, commentaires)
+                    VALUES (NEW.id, 'CHANGEMENT_STATUT', OLD.statut, NEW.statut, 'Changement automatique de statut');
+                END;
+            ''')
+            
+            # ÉTAPE 2 : Trigger pour validation automatique des pointages BT
+            cursor.execute('''
+                CREATE TRIGGER IF NOT EXISTS trigger_validate_bt_timetracker
+                BEFORE INSERT ON time_entries
+                FOR EACH ROW
+                WHEN NEW.formulaire_bt_id IS NOT NULL
+                BEGIN
+                    SELECT CASE 
+                        WHEN (SELECT type_formulaire FROM formulaires WHERE id = NEW.formulaire_bt_id) != 'BON_TRAVAIL' THEN
+                            RAISE(ABORT, 'formulaire_bt_id doit référencer un Bon de Travail')
+                        WHEN NEW.employee_id IS NULL THEN
+                            RAISE(ABORT, 'employee_id obligatoire pour pointage BT')
+                    END;
+                END;
+            ''')
+            
+            # 26. MOUVEMENTS DE STOCK (Inventaire)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS mouvements_stock (
+                    id INTEGER PRIMARY KEY,
+                    produit_id INTEGER NOT NULL,
+                    type_mouvement TEXT NOT NULL CHECK(type_mouvement IN 
+                        ('ENTREE', 'SORTIE', 'AJUSTEMENT', 'RESERVATION', 'LIBERATION', 'INVENTAIRE')),
+                    quantite REAL NOT NULL,
+                    quantite_avant REAL,
+                    quantite_apres REAL,
+                    reference_document TEXT,
+                    reference_type TEXT CHECK(reference_type IN 
+                        ('BON_RECEPTION', 'BON_LIVRAISON', 'BON_TRAVAIL', 'AJUSTEMENT', 'INVENTAIRE', 'AUTRE')),
+                    motif TEXT,
+                    employee_id INTEGER,
+                    cout_unitaire REAL,
+                    cout_total REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (produit_id) REFERENCES produits(id),
+                    FOREIGN KEY (employee_id) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 27. INVENTAIRES PHYSIQUES
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS inventaires_physiques (
+                    id INTEGER PRIMARY KEY,
+                    code_inventaire TEXT UNIQUE NOT NULL,
+                    date_inventaire DATE NOT NULL,
+                    statut TEXT DEFAULT 'EN_COURS' CHECK(statut IN 
+                        ('EN_COURS', 'COMPLETE', 'VALIDE', 'ANNULE')),
+                    type_inventaire TEXT DEFAULT 'COMPLET' CHECK(type_inventaire IN 
+                        ('COMPLET', 'PARTIEL', 'CYCLIQUE', 'ALEATOIRE')),
+                    created_by INTEGER,
+                    validated_by INTEGER,
+                    validated_at TIMESTAMP,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (created_by) REFERENCES employees(id),
+                    FOREIGN KEY (validated_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 28. LIGNES D'INVENTAIRE
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS inventaire_lignes (
+                    id INTEGER PRIMARY KEY,
+                    inventaire_id INTEGER NOT NULL,
+                    produit_id INTEGER NOT NULL,
+                    quantite_theorique REAL NOT NULL,
+                    quantite_physique REAL,
+                    ecart REAL,
+                    ecart_valeur REAL,
+                    statut_ligne TEXT DEFAULT 'A_COMPTER' CHECK(statut_ligne IN 
+                        ('A_COMPTER', 'COMPTE', 'VALIDE', 'ECART_JUSTIFIE')),
+                    justification TEXT,
+                    compte_par INTEGER,
+                    compte_at TIMESTAMP,
+                    FOREIGN KEY (inventaire_id) REFERENCES inventaires_physiques(id),
+                    FOREIGN KEY (produit_id) REFERENCES produits(id),
+                    FOREIGN KEY (compte_par) REFERENCES employees(id)
+                )
+            ''')
+            
+            # 29. RESERVATIONS DE STOCK
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS reservations_stock (
+                    id INTEGER PRIMARY KEY,
+                    produit_id INTEGER NOT NULL,
+                    quantite_reservee REAL NOT NULL,
+                    reference_document TEXT NOT NULL,
+                    reference_type TEXT CHECK(reference_type IN 
+                        ('BON_TRAVAIL', 'DEVIS', 'COMMANDE_CLIENT', 'PROJET', 'AUTRE')),
+                    date_reservation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    date_expiration TIMESTAMP,
+                    statut TEXT DEFAULT 'ACTIVE' CHECK(statut IN 
+                        ('ACTIVE', 'LIBEREE', 'EXPIREE', 'ANNULEE')),
+                    created_by INTEGER,
+                    notes TEXT,
+                    FOREIGN KEY (produit_id) REFERENCES produits(id),
+                    FOREIGN KEY (created_by) REFERENCES employees(id)
+                )
+            ''')
+            
+            conn.commit()
+            
+            # =========================================================================
+            # CORRECTIONS AUTOMATIQUES POST-CRÉATION (Migration des anciennes colonnes)
+            # =========================================================================
+            
+            # Vérifier et ajouter les colonnes manquantes si elles n'existent pas déjà
+            self._apply_automatic_fixes(cursor)
+            
+            conn.commit()
+            logger.info("Base de données ERP consolidée + Interface Unifiée + Production + Operations↔BT + Communication TT initialisée avec succès")
+            
+            # Optimisation finale de la base
+            cursor.execute("PRAGMA optimize")
+    
+    def _apply_automatic_fixes(self, cursor):
+        """Applique automatiquement toutes les corrections nécessaires - ÉTAPE 2 AMÉLIORÉE + OPERATIONS↔BT"""
+        
+        # Ajouter les colonnes manquantes dans crm_activities si nécessaire
+        try:
+            cursor.execute("PRAGMA table_info(crm_activities)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'interaction_id' not in columns:
+                cursor.execute("ALTER TABLE crm_activities ADD COLUMN interaction_id INTEGER")
+                logger.info("✅ Colonne interaction_id ajoutée à crm_activities")
+                
+            if 'opportunity_id' not in columns:
+                cursor.execute("ALTER TABLE crm_activities ADD COLUMN opportunity_id INTEGER")
+                logger.info("✅ Colonne opportunity_id ajoutée à crm_activities")
+        except Exception as e:
+            logger.debug(f"Vérification colonnes crm_activities: {e}")
+        try:
+            # Vérifier les colonnes existantes dans projects
+            cursor.execute("PRAGMA table_info(projects)")
+            existing_columns = [col[1] for col in cursor.fetchall()]
+            
+            # Ajouter les colonnes manquantes si nécessaire
+            if 'date_debut_reel' not in existing_columns:
+                cursor.execute("ALTER TABLE projects ADD COLUMN date_debut_reel DATE")
+                logger.info("✅ Colonne date_debut_reel ajoutée automatiquement")
+            
+            if 'date_fin_reel' not in existing_columns:
+                cursor.execute("ALTER TABLE projects ADD COLUMN date_fin_reel DATE")
+                logger.info("✅ Colonne date_fin_reel ajoutée automatiquement")
+            
+            if 'po_client' not in existing_columns:
+                cursor.execute("ALTER TABLE projects ADD COLUMN po_client TEXT")
+                logger.info("✅ Colonne po_client ajoutée automatiquement")
+            
+            # ÉTAPE 2 : Vérifier et ajouter la colonne formulaire_bt_id dans time_entries
+            cursor.execute("PRAGMA table_info(time_entries)")
+            time_entries_columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'formulaire_bt_id' not in time_entries_columns:
+                cursor.execute("ALTER TABLE time_entries ADD COLUMN formulaire_bt_id INTEGER")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_time_entries_bt ON time_entries(formulaire_bt_id)")
+                logger.info("✅ ÉTAPE 2 : Colonne formulaire_bt_id ajoutée à time_entries")
+                logger.info("✅ ÉTAPE 2 : Index idx_time_entries_bt créé pour performance")
+            
+            # NOUVEAU : Vérifier et ajouter la colonne formulaire_bt_id dans operations
+            cursor.execute("PRAGMA table_info(operations)")
+            operations_columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'formulaire_bt_id' not in operations_columns:
+                cursor.execute("ALTER TABLE operations ADD COLUMN formulaire_bt_id INTEGER")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_operations_bt ON operations(formulaire_bt_id)")
+                logger.info("✅ NOUVEAU : Colonne formulaire_bt_id ajoutée à operations")
+                logger.info("✅ NOUVEAU : Index idx_operations_bt créé pour performance")
+            
+            # Vérifier et corriger d'autres tables si nécessaire
+            # (Cette section peut être étendue pour d'autres corrections automatiques)
+            
+            logger.info("🔧 Corrections automatiques appliquées avec succès - ÉTAPE 2 + Interface Unifiée + Production + Lien Operations-BT + Communication TT INTÉGRÉE")
+            
+        except Exception as e:
+            logger.warning(f"Avertissement lors des corrections automatiques: {e}")
+    
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES AUX POSTES DE TRAVAIL - INTERFACE UNIFIÉE
+    # =========================================================================
+
+    def get_work_center_by_id(self, work_center_id: int) -> Optional[Dict]:
+        """Récupère un poste de travail par son ID avec détails complets"""
+        try:
+            query = '''
+                SELECT wc.*, 
+                       COUNT(DISTINCT o.id) as operations_count,
+                       COUNT(DISTINCT te.id) as timetracker_entries,
+                       COALESCE(SUM(te.total_hours), 0) as total_hours_tracked,
+                       COALESCE(SUM(te.total_cost), 0) as total_revenue_generated,
+                       COALESCE(AVG(te.hourly_rate), wc.cout_horaire) as avg_actual_rate
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+                WHERE wc.id = ?
+                GROUP BY wc.id
+            '''
+            result = self.execute_query(query, (work_center_id,))
+            return dict(result[0]) if result else None
+        except Exception as e:
+            logger.error(f"Erreur récupération poste {work_center_id}: {e}")
+            return None
+
+    def get_work_center_by_name(self, work_center_name: str) -> Optional[Dict]:
+        """Récupère un poste de travail par son nom avec statistiques"""
+        try:
+            query = '''
+                SELECT wc.*, 
+                       COUNT(DISTINCT o.id) as operations_count,
+                       COUNT(DISTINCT te.id) as timetracker_entries,
+                       COALESCE(SUM(te.total_hours), 0) as total_hours_tracked,
+                       COALESCE(SUM(te.total_cost), 0) as total_revenue_generated
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+                WHERE wc.nom = ?
+                GROUP BY wc.id
+            '''
+            result = self.execute_query(query, (work_center_name,))
+            return dict(result[0]) if result else None
+        except Exception as e:
+            logger.error(f"Erreur récupération poste '{work_center_name}': {e}")
+            return None
+
+    def add_work_center(self, work_center_data: Dict) -> Optional[int]:
+        """Ajoute un nouveau poste de travail avec validation"""
+        try:
+            # Validation des données requises
+            required_fields = ['nom', 'departement', 'categorie']
+            for field in required_fields:
+                if field not in work_center_data or not work_center_data[field]:
+                    raise ValueError(f"Champ requis manquant: {field}")
+            
+            # Vérifier l'unicité du nom
+            existing = self.get_work_center_by_name(work_center_data['nom'])
+            if existing:
+                raise ValueError(f"Un poste avec le nom '{work_center_data['nom']}' existe déjà")
+            
+            query = '''
+                INSERT INTO work_centers 
+                (nom, departement, categorie, type_machine, capacite_theorique, 
+                 operateurs_requis, cout_horaire, competences_requises, statut, localisation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            work_center_id = self.execute_insert(query, (
+                work_center_data['nom'],
+                work_center_data['departement'],
+                work_center_data.get('categorie', ''),
+                work_center_data.get('type_machine', ''),
+                work_center_data.get('capacite_theorique', 8.0),
+                work_center_data.get('operateurs_requis', 1),
+                work_center_data.get('cout_horaire', 50.0),
+                work_center_data.get('competences_requises', '[]'),
+                work_center_data.get('statut', 'ACTIF'),
+                work_center_data.get('localisation', '')
+            ))
+            
+            logger.info(f"Poste de travail créé: ID={work_center_id}, nom={work_center_data['nom']}")
+            return work_center_id
+            
+        except Exception as e:
+            logger.error(f"Erreur ajout poste de travail: {e}")
+            return None
+
+    def update_work_center(self, work_center_id: int, work_center_data: Dict) -> bool:
+        """Met à jour un poste de travail existant"""
+        try:
+            # Vérifier que le poste existe
+            existing = self.get_work_center_by_id(work_center_id)
+            if not existing:
+                raise ValueError(f"Poste de travail {work_center_id} non trouvé")
+            
+            # Vérifier l'unicité du nom si changé
+            if 'nom' in work_center_data and work_center_data['nom'] != existing['nom']:
+                name_check = self.get_work_center_by_name(work_center_data['nom'])
+                if name_check and name_check['id'] != work_center_id:
+                    raise ValueError(f"Un autre poste avec le nom '{work_center_data['nom']}' existe déjà")
+            
+            query = '''
+                UPDATE work_centers SET
+                nom = ?, departement = ?, categorie = ?, type_machine = ?,
+                capacite_theorique = ?, operateurs_requis = ?, cout_horaire = ?,
+                competences_requises = ?, statut = ?, localisation = ?
+                WHERE id = ?
+            '''
+            
+            affected = self.execute_update(query, (
+                work_center_data.get('nom', existing['nom']),
+                work_center_data.get('departement', existing['departement']),
+                work_center_data.get('categorie', existing['categorie']),
+                work_center_data.get('type_machine', existing['type_machine']),
+                work_center_data.get('capacite_theorique', existing['capacite_theorique']),
+                work_center_data.get('operateurs_requis', existing['operateurs_requis']),
+                work_center_data.get('cout_horaire', existing['cout_horaire']),
+                work_center_data.get('competences_requises', existing['competences_requises']),
+                work_center_data.get('statut', existing['statut']),
+                work_center_data.get('localisation', existing['localisation']),
+                work_center_id
+            ))
+            
+            logger.info(f"Poste de travail mis à jour: ID={work_center_id}")
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur mise à jour poste {work_center_id}: {e}")
+            return False
+
+    def delete_work_center(self, work_center_id: int) -> bool:
+        """Supprime un poste de travail avec vérification des dépendances"""
+        try:
+            # Vérifier les dépendances - opérations
+            operations_count = self.execute_query(
+                "SELECT COUNT(*) as count FROM operations WHERE work_center_id = ?",
+                (work_center_id,)
+            )
+            if operations_count and operations_count[0]['count'] > 0:
+                raise ValueError(f"Impossible de supprimer: {operations_count[0]['count']} opération(s) liée(s)")
+            
+            # Vérifier les dépendances - réservations BT
+            reservations_count = self.execute_query(
+                "SELECT COUNT(*) as count FROM bt_reservations_postes WHERE work_center_id = ?",
+                (work_center_id,)
+            )
+            if reservations_count and reservations_count[0]['count'] > 0:
+                raise ValueError(f"Impossible de supprimer: {reservations_count[0]['count']} réservation(s) BT active(s)")
+            
+            affected = self.execute_update("DELETE FROM work_centers WHERE id = ?", (work_center_id,))
+            
+            logger.info(f"Poste de travail supprimé: ID={work_center_id}")
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur suppression poste {work_center_id}: {e}")
+            return False
+
+    def get_work_centers_statistics(self) -> Dict[str, Any]:
+        """Statistiques complètes des postes de travail pour interface unifiée"""
+        try:
+            stats = {
+                'total_work_centers': 0,
+                'by_department': {},
+                'by_category': {},
+                'by_status': {},
+                'capacity_analysis': {},
+                'timetracker_integration': {},
+                'cost_analysis': {}
+            }
+            
+            # Statistiques de base
+            basic_stats = self.execute_query('''
+                SELECT 
+                    COUNT(*) as total,
+                    COUNT(CASE WHEN statut = 'ACTIF' THEN 1 END) as actif,
+                    COUNT(CASE WHEN statut = 'MAINTENANCE' THEN 1 END) as maintenance,
+                    COUNT(CASE WHEN statut = 'INACTIF' THEN 1 END) as inactif,
+                    SUM(capacite_theorique) as capacite_totale,
+                    AVG(capacite_theorique) as capacite_moyenne,
+                    SUM(cout_horaire * capacite_theorique) as cout_total_theorique,
+                    AVG(cout_horaire) as cout_horaire_moyen
+                FROM work_centers
+            ''')
+            
+            if basic_stats:
+                base = dict(basic_stats[0])
+                stats['total_work_centers'] = base['total']
+                stats['by_status'] = {
+                    'ACTIF': base['actif'],
+                    'MAINTENANCE': base['maintenance'], 
+                    'INACTIF': base['inactif']
+                }
+                stats['capacity_analysis'] = {
+                    'capacite_totale_heures_jour': base['capacite_totale'],
+                    'capacite_moyenne_par_poste': base['capacite_moyenne'],
+                    'cout_total_theorique_jour': base['cout_total_theorique'],
+                    'cout_horaire_moyen': base['cout_horaire_moyen']
+                }
+            
+            # Par département
+            dept_stats = self.execute_query('''
+                SELECT departement, COUNT(*) as count, 
+                       SUM(capacite_theorique) as capacite,
+                       AVG(cout_horaire) as cout_moyen
+                FROM work_centers 
+                GROUP BY departement
+                ORDER BY count DESC
+            ''')
+            stats['by_department'] = {row['departement']: dict(row) for row in dept_stats}
+            
+            # Par catégorie
+            cat_stats = self.execute_query('''
+                SELECT categorie, COUNT(*) as count,
+                       SUM(capacite_theorique) as capacite,
+                       AVG(cout_horaire) as cout_moyen
+                FROM work_centers 
+                GROUP BY categorie
+                ORDER BY count DESC
+            ''')
+            stats['by_category'] = {row['categorie']: dict(row) for row in cat_stats}
+            
+            # Intégration TimeTracker
+            tt_stats = self.execute_query('''
+                SELECT 
+                    COUNT(DISTINCT wc.id) as postes_avec_pointages,
+                    COUNT(DISTINCT te.id) as total_pointages,
+                    COALESCE(SUM(te.total_hours), 0) as total_heures,
+                    COALESCE(SUM(te.total_cost), 0) as total_revenus,
+                    COUNT(DISTINCT te.employee_id) as employes_ayant_pointe
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+            ''')
+            
+            if tt_stats:
+                tt_data = dict(tt_stats[0])
+                stats['timetracker_integration'] = tt_data
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Erreur statistiques postes de travail: {e}")
+            return {}
+
+    def get_work_center_utilization_analysis(self, period_days: int = 30) -> List[Dict]:
+        """Analyse d'utilisation des postes de travail avec TimeTracker"""
+        try:
+            start_date = (datetime.now() - timedelta(days=period_days)).strftime('%Y-%m-%d')
+            
+            query = '''
+                SELECT 
+                    wc.id, wc.nom, wc.departement, wc.categorie, wc.type_machine,
+                    wc.capacite_theorique, wc.cout_horaire, wc.operateurs_requis,
+                    COALESCE(SUM(te.total_hours), 0) as heures_reelles,
+                    COALESCE(SUM(te.total_cost), 0) as revenus_generes,
+                    COALESCE(AVG(te.hourly_rate), wc.cout_horaire) as taux_horaire_reel,
+                    COUNT(DISTINCT te.id) as nombre_pointages,
+                    COUNT(DISTINCT te.employee_id) as employes_distincts,
+                    COUNT(DISTINCT o.project_id) as projets_touches,
+                    -- Calcul du taux d'utilisation
+                    CASE 
+                        WHEN wc.capacite_theorique > 0 THEN
+                            ROUND((COALESCE(SUM(te.total_hours), 0) / (wc.capacite_theorique * ?)) * 100, 2)
+                        ELSE 0
+                    END as taux_utilisation_pct
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id 
+                    AND te.total_cost IS NOT NULL 
+                    AND DATE(te.punch_in) >= ?
+                WHERE wc.statut = 'ACTIF'
+                GROUP BY wc.id
+                ORDER BY heures_reelles DESC
+            '''
+            
+            rows = self.execute_query(query, (period_days, start_date))
+            
+            analysis = []
+            for row in rows:
+                data = dict(row)
+                
+                # Calculs additionnels
+                if data['heures_reelles'] > 0:
+                    data['efficacite_cout'] = data['revenus_generes'] / data['heures_reelles']
+                    data['rentabilite_vs_theorique'] = (data['efficacite_cout'] / data['cout_horaire']) * 100 if data['cout_horaire'] > 0 else 0
+                else:
+                    data['efficacite_cout'] = 0
+                    data['rentabilite_vs_theorique'] = 0
+                
+                # Classification d'utilisation
+                utilisation = data['taux_utilisation_pct']
+                if utilisation >= 80:
+                    data['classification_utilisation'] = 'ÉLEVÉE'
+                elif utilisation >= 50:
+                    data['classification_utilisation'] = 'MOYENNE'
+                elif utilisation >= 20:
+                    data['classification_utilisation'] = 'FAIBLE'
+                else:
+                    data['classification_utilisation'] = 'TRÈS_FAIBLE'
+                
+                analysis.append(data)
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse utilisation postes: {e}")
+            return []
+
+    def get_work_center_capacity_bottlenecks(self) -> List[Dict]:
+        """Identifie les goulots d'étranglement dans les postes de travail"""
+        try:
+            query = '''
+                SELECT 
+                    wc.id, wc.nom, wc.departement, wc.categorie,
+                    wc.capacite_theorique, wc.operateurs_requis,
+                    -- Charge planifiée (opérations en cours)
+                    COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) as charge_planifiee,
+                    -- Charge réelle (TimeTracker)
+                    COALESCE(SUM(CASE WHEN te.punch_out IS NULL THEN 
+                        (JULIANDAY('now') - JULIANDAY(te.punch_in)) * 24 
+                    ELSE 0 END), 0) as charge_en_cours,
+                    COUNT(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN 1 END) as operations_en_attente,
+                    COUNT(CASE WHEN te.punch_out IS NULL THEN 1 END) as pointages_actifs,
+                    -- Calcul du taux de charge
+                    CASE 
+                        WHEN wc.capacite_theorique > 0 THEN
+                            ROUND(((COALESCE(SUM(CASE WHEN o.statut IN ('À FAIRE', 'EN COURS') THEN o.temps_estime ELSE 0 END), 0) / 
+                                   (wc.capacite_theorique * 5)) * 100), 2) -- Sur 5 jours
+                        ELSE 0
+                    END as taux_charge_planifiee_pct
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id
+                WHERE wc.statut = 'ACTIF'
+                GROUP BY wc.id
+                HAVING taux_charge_planifiee_pct > 70  -- Seuil de goulot d'étranglement
+                ORDER BY taux_charge_planifiee_pct DESC
+            '''
+            
+            rows = self.execute_query(query)
+            
+            bottlenecks = []
+            for row in rows:
+                data = dict(row)
+                
+                # Classification du niveau de goulot
+                charge = data['taux_charge_planifiee_pct']
+                if charge >= 100:
+                    data['niveau_goulot'] = 'CRITIQUE'
+                    data['priorite'] = 1
+                elif charge >= 90:
+                    data['niveau_goulot'] = 'ÉLEVÉ'
+                    data['priorite'] = 2
+                elif charge >= 80:
+                    data['niveau_goulot'] = 'MODÉRÉ'
+                    data['priorite'] = 3
+                else:
+                    data['niveau_goulot'] = 'FAIBLE'
+                    data['priorite'] = 4
+                
+                # Recommandations automatiques
+                recommendations = []
+                if data['operations_en_attente'] > 5:
+                    recommendations.append("Réorganiser la séquence des opérations")
+                if data['pointages_actifs'] > data['operateurs_requis']:
+                    recommendations.append("Surcharge d'opérateurs détectée")
+                if charge >= 100:
+                    recommendations.append("Considérer des heures supplémentaires")
+                    recommendations.append("Évaluer la sous-traitance")
+                
+                data['recommandations'] = recommendations
+                bottlenecks.append(data)
+            
+            return bottlenecks
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse goulots postes: {e}")
+            return []
+
+    # =========================================================================
+    # MÉTHODES POUR GAMMES DE FABRICATION - INTERFACE UNIFIÉE
+    # =========================================================================
+
+    def create_manufacturing_route(self, project_id: int, route_data: Dict) -> int:
+        """Crée une gamme de fabrication complète pour un projet"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Créer les opérations de la gamme
+                created_operations = []
+                bt_id = route_data.get('formulaire_bt_id')  # AJOUT : Récupérer le BT lié si fourni
+                
+                for operation_data in route_data.get('operations', []):
+                    # Trouver le work_center_id par nom
+                    wc_result = self.execute_query(
+                        "SELECT id FROM work_centers WHERE nom = ?",
+                        (operation_data['poste_travail'],)
+                    )
+                    work_center_id = wc_result[0]['id'] if wc_result else None
+                    
+                    op_query = '''
+                        INSERT INTO operations 
+                        (project_id, work_center_id, formulaire_bt_id, sequence_number, description, 
+                         temps_estime, ressource, statut, poste_travail)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    '''
+                    
+                    op_id = self.execute_insert(op_query, (
+                        project_id,
+                        work_center_id,
+                        bt_id,  # AJOUT : Lier l'opération au BT si fourni
+                        operation_data.get('sequence_number', 0),
+                        operation_data.get('description', ''),
+                        operation_data.get('temps_estime', 0.0),
+                        operation_data.get('ressource', ''),
+                        operation_data.get('statut', 'À FAIRE'),
+                        operation_data['poste_travail']
+                    ))
+                    
+                    created_operations.append(op_id)
+                
+                logger.info(f"Gamme créée pour projet {project_id}: {len(created_operations)} opérations{' (liées au BT #' + str(bt_id) + ')' if bt_id else ''}")
+                return len(created_operations)
+                
+        except Exception as e:
+            logger.error(f"Erreur création gamme projet {project_id}: {e}")
+            return 0
+
+    def get_manufacturing_route_templates(self) -> Dict[str, Any]:
+        """Récupère les templates de gammes disponibles avec validation postes"""
+        try:
+            # Templates de base (équivalent à initialiser_gammes_types)
+            templates = {
+                "MAISON_RESIDENTIELLE": {
+                    "nom": "Maison Résidentielle",
+                    "description": "Construction maison unifamiliale",
+                    "operations": [
+                        {"sequence": "10", "poste": "Bureau études", "description": "Plans et permis", "temps_base": 40.0},
+                        {"sequence": "20", "poste": "Excavation", "description": "Excavation et terrassement", "temps_base": 16.0},
+                        {"sequence": "30", "poste": "Fondations", "description": "Coulée fondations", "temps_base": 24.0},
+                        {"sequence": "40", "poste": "Charpente", "description": "Montage structure bois", "temps_base": 40.0},
+                        {"sequence": "50", "poste": "Toiture", "description": "Installation toiture", "temps_base": 24.0},
+                        {"sequence": "60", "poste": "Plomberie brute", "description": "Installation plomberie", "temps_base": 16.0},
+                        {"sequence": "70", "poste": "Électricité brute", "description": "Installation électrique", "temps_base": 20.0},
+                        {"sequence": "80", "poste": "Isolation", "description": "Pose isolation", "temps_base": 16.0},
+                        {"sequence": "90", "poste": "Plâtre", "description": "Installation gypse", "temps_base": 24.0},
+                        {"sequence": "100", "poste": "Finition", "description": "Peinture et finition", "temps_base": 40.0}
+                    ]
+                },
+                "BATIMENT_COMMERCIAL": {
+                    "nom": "Bâtiment Commercial", 
+                    "description": "Construction commerciale/bureau",
+                    "operations": [
+                        {"sequence": "10", "poste": "Bureau études", "description": "Plans et ingénierie", "temps_base": 80.0},
+                        {"sequence": "20", "poste": "Excavation", "description": "Excavation profonde", "temps_base": 40.0},
+                        {"sequence": "30", "poste": "Fondations", "description": "Dalle structurale", "temps_base": 60.0},
+                        {"sequence": "40", "poste": "Structure acier", "description": "Montage structure acier", "temps_base": 80.0},
+                        {"sequence": "50", "poste": "Bétonnage", "description": "Planchers béton", "temps_base": 60.0},
+                        {"sequence": "60", "poste": "Enveloppe", "description": "Murs rideaux", "temps_base": 100.0},
+                        {"sequence": "70", "poste": "Mécanique bâtiment", "description": "CVAC et plomberie", "temps_base": 120.0},
+                        {"sequence": "80", "poste": "Électricité commerciale", "description": "Distribution électrique", "temps_base": 100.0},
+                        {"sequence": "90", "poste": "Cloisons", "description": "Divisions intérieures", "temps_base": 80.0},
+                        {"sequence": "100", "poste": "Finition commerciale", "description": "Revêtements finaux", "temps_base": 120.0},
+                        {"sequence": "110", "poste": "Mise en service", "description": "Tests et certification", "temps_base": 40.0}
+                    ]
+                },
+                "RENOVATION_MAJEURE": {
+                    "nom": "Rénovation Majeure",
+                    "description": "Rénovation complète résidentielle", 
+                    "operations": [
+                        {"sequence": "10", "poste": "Bureau études", "description": "Plans rénovation", "temps_base": 24.0},
+                        {"sequence": "20", "poste": "Démolition", "description": "Démolition contrôlée", "temps_base": 32.0},
+                        {"sequence": "30", "poste": "Structure", "description": "Renforcement structure", "temps_base": 40.0},
+                        {"sequence": "40", "poste": "Plomberie", "description": "Mise aux normes plomberie", "temps_base": 24.0},
+                        {"sequence": "50", "poste": "Électricité", "description": "Mise aux normes électrique", "temps_base": 32.0},
+                        {"sequence": "60", "poste": "Isolation", "description": "Amélioration isolation", "temps_base": 24.0},
+                        {"sequence": "70", "poste": "Fenêtres/Portes", "description": "Remplacement ouvertures", "temps_base": 16.0},
+                        {"sequence": "80", "poste": "Revêtements", "description": "Nouveaux revêtements", "temps_base": 40.0},
+                        {"sequence": "90", "poste": "Cuisine/SDB", "description": "Rénovation pièces d'eau", "temps_base": 48.0},
+                        {"sequence": "100", "poste": "Finition", "description": "Finitions générales", "temps_base": 32.0},
+                        {"sequence": "110", "poste": "Nettoyage", "description": "Nettoyage final", "temps_base": 8.0},
+                        {"sequence": "120", "poste": "Inspection", "description": "Inspection finale", "temps_base": 4.0}
+                    ]
+                }
+            }
+            
+            # Valider que tous les postes existent
+            for template_key, template in templates.items():
+                postes_valides = []
+                postes_manquants = []
+                
+                for operation in template['operations']:
+                    poste_nom = operation['poste']
+                    poste_exists = self.execute_query(
+                        "SELECT id FROM work_centers WHERE nom = ?",
+                        (poste_nom,)
+                    )
+                    
+                    if poste_exists:
+                        postes_valides.append(poste_nom)
+                    else:
+                        postes_manquants.append(poste_nom)
+                
+                template['validation'] = {
+                    'postes_valides': postes_valides,
+                    'postes_manquants': postes_manquants,
+                    'taux_validite': len(postes_valides) / len(template['operations']) * 100 if template['operations'] else 0
+                }
+            
+            return templates
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération templates gammes: {e}")
+            return {}
+
+    def optimize_manufacturing_route(self, project_id: int) -> Dict[str, Any]:
+        """Optimise une gamme de fabrication existante"""
+        try:
+            # Récupérer les opérations actuelles
+            current_operations = self.execute_query('''
+                SELECT o.*, wc.nom as work_center_name, wc.capacite_theorique, 
+                       wc.cout_horaire, wc.departement
+                FROM operations o
+                LEFT JOIN work_centers wc ON o.work_center_id = wc.id
+                WHERE o.project_id = ?
+                ORDER BY o.sequence_number
+            ''', (project_id,))
+            
+            if not current_operations:
+                return {'error': 'Aucune opération trouvée pour ce projet'}
+            
+            optimization_results = {
+                'project_id': project_id,
+                'current_operations_count': len(current_operations),
+                'analysis': {
+                    'departements_utilises': set(),
+                    'temps_total_estime': 0,
+                    'cout_total_estime': 0,
+                    'goulots_detectes': [],
+                    'suggestions_amelioration': []
+                },
+                'optimizations': []
+            }
+            
+            # Analyse des opérations actuelles
+            for op in current_operations:
+                op_dict = dict(op)
+                optimization_results['analysis']['departements_utilises'].add(op_dict.get('departement', 'N/A'))
+                optimization_results['analysis']['temps_total_estime'] += op_dict.get('temps_estime', 0)
+                optimization_results['analysis']['cout_total_estime'] += (op_dict.get('temps_estime', 0) * op_dict.get('cout_horaire', 0))
+            
+            # Convertir set en list pour JSON
+            optimization_results['analysis']['departements_utilises'] = list(optimization_results['analysis']['departements_utilises'])
+            
+            # Détecter les goulots d'étranglement
+            bottlenecks = self.get_work_center_capacity_bottlenecks()
+            current_work_centers = [op['work_center_id'] for op in current_operations if op['work_center_id']]
+            
+            for bottleneck in bottlenecks:
+                if bottleneck['id'] in current_work_centers:
+                    optimization_results['analysis']['goulots_detectes'].append({
+                        'poste': bottleneck['nom'],
+                        'charge': bottleneck['taux_charge_planifiee_pct'],
+                        'niveau': bottleneck['niveau_goulot']
+                    })
+            
+            # Suggestions d'amélioration
+            suggestions = []
+            if len(optimization_results['analysis']['goulots_detectes']) > 0:
+                suggestions.append("Réorganiser les opérations pour éviter les goulots d'étranglement")
+            
+            if optimization_results['analysis']['temps_total_estime'] > 40:  # Plus de 40h
+                suggestions.append("Considérer la parallélisation des opérations")
+            
+            if len(optimization_results['analysis']['departements_utilises']) > 3:
+                suggestions.append("Réduire les déplacements inter-départements")
+            
+            optimization_results['analysis']['suggestions_amelioration'] = suggestions
+            
+            return optimization_results
+            
+        except Exception as e:
+            logger.error(f"Erreur optimisation gamme projet {project_id}: {e}")
+            return {'error': str(e)}
+
+    def create_operation_for_bt(self, bt_id: int, operation_data: Dict) -> Optional[int]:
+        """Crée une opération spécifiquement liée à un Bon de Travail"""
+        try:
+            # Vérifier que le BT existe et récupérer le project_id
+            bt_info = self.execute_query(
+                "SELECT project_id FROM formulaires WHERE id = ? AND type_formulaire = 'BON_TRAVAIL'",
+                (bt_id,)
+            )
+            
+            if not bt_info:
+                logger.error(f"BT {bt_id} non trouvé ou n'est pas un Bon de Travail")
+                return None
+            
+            project_id = bt_info[0]['project_id']
+            
+            # Trouver le work_center_id par nom si fourni
+            work_center_id = None
+            if operation_data.get('poste_travail'):
+                wc_result = self.execute_query(
+                    "SELECT id FROM work_centers WHERE nom = ?",
+                    (operation_data['poste_travail'],)
+                )
+                work_center_id = wc_result[0]['id'] if wc_result else None
+            
+            # Créer l'opération
+            query = '''
+                INSERT INTO operations 
+                (project_id, work_center_id, formulaire_bt_id, sequence_number, description, 
+                 temps_estime, ressource, statut, poste_travail)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            operation_id = self.execute_insert(query, (
+                project_id,
+                work_center_id,
+                bt_id,
+                operation_data.get('sequence_number', 1),
+                operation_data.get('description', ''),
+                operation_data.get('temps_estime', 0.0),
+                operation_data.get('ressource', ''),
+                operation_data.get('statut', 'À FAIRE'),
+                operation_data.get('poste_travail', '')
+            ))
+            
+            logger.info(f"✅ Opération créée pour BT #{bt_id}: operation_id={operation_id}")
+            return operation_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création opération pour BT: {e}")
+            return None
+
+    def get_operations_by_bt(self, bt_id: int) -> List[Dict]:
+        """Récupère toutes les opérations liées à un Bon de Travail"""
+        try:
+            query = '''
+                SELECT o.*, 
+                       wc.nom as work_center_name, 
+                       wc.departement as work_center_departement,
+                       wc.capacite_theorique,
+                       wc.cout_horaire as work_center_cout_horaire,
+                       p.nom_projet
+                FROM operations o
+                LEFT JOIN work_centers wc ON o.work_center_id = wc.id
+                LEFT JOIN projects p ON o.project_id = p.id
+                WHERE o.formulaire_bt_id = ?
+                ORDER BY o.sequence_number, o.id
+            '''
+            rows = self.execute_query(query, (bt_id,))
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération opérations BT {bt_id}: {e}")
+            return []
+
+    def get_bts_with_operations(self) -> List[Dict]:
+        """Récupère tous les BTs qui ont des opérations liées"""
+        try:
+            query = '''
+                SELECT f.id as bt_id, f.numero_document, f.statut as bt_statut,
+                       p.nom_projet, c.nom as company_nom,
+                       COUNT(o.id) as nb_operations,
+                       COALESCE(SUM(o.temps_estime), 0) as temps_total_estime,
+                       GROUP_CONCAT(DISTINCT wc.nom) as postes_utilises
+                FROM formulaires f
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN companies c ON f.company_id = c.id
+                LEFT JOIN operations o ON f.id = o.formulaire_bt_id
+                LEFT JOIN work_centers wc ON o.work_center_id = wc.id
+                WHERE f.type_formulaire = 'BON_TRAVAIL'
+                AND o.id IS NOT NULL
+                GROUP BY f.id
+                ORDER BY f.numero_document
+            '''
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération BTs avec opérations: {e}")
+            return []
+
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES À L'INTÉGRATION TIMETRACKER ↔ BONS DE TRAVAIL (ÉTAPE 2)
+    # =========================================================================
+    
+    def get_bts_assignes_employe_avec_timetracker(self, employee_id: int) -> List[Dict]:
+        """Récupère les BTs assignés à un employé avec ses statistiques TimeTracker"""
+        try:
+            query = '''
+                SELECT 
+                    f.id as bt_id,
+                    f.numero_document,
+                    f.statut as bt_statut,
+                    f.priorite as bt_priorite,
+                    f.date_creation,
+                    f.date_echeance,
+                    p.nom_projet,
+                    c.nom as company_nom,
+                    bta.date_assignation,
+                    bta.statut as assignation_statut,
+                    bta.notes_assignation,
+                    -- Statistiques TimeTracker
+                    COUNT(DISTINCT te.id) as nb_sessions_pointage,
+                    COALESCE(SUM(te.total_hours), 0) as total_heures_pointees,
+                    COALESCE(SUM(te.total_cost), 0) as total_cout_pointage,
+                    MAX(te.punch_out) as derniere_session
+                FROM bt_assignations bta
+                JOIN formulaires f ON bta.bt_id = f.id
+                LEFT JOIN projects p ON f.project_id = p.id
+                LEFT JOIN companies c ON f.company_id = c.id
+                LEFT JOIN time_entries te ON f.id = te.formulaire_bt_id AND te.employee_id = ?
+                LEFT JOIN bt_avancement ba ON f.id = ba.bt_id
+                WHERE bta.employe_id = ? 
+                AND bta.statut = 'ASSIGNÉ'
+                AND f.statut NOT IN ('TERMINÉ', 'ANNULÉ')
+                GROUP BY f.id, bta.id
+                ORDER BY 
+                    CASE f.priorite 
+                        WHEN 'CRITIQUE' THEN 1
+                        WHEN 'URGENT' THEN 2
+                        WHEN 'NORMAL' THEN 3
+                    END,
+                    f.date_echeance ASC
+            '''
+            
+            rows = self.execute_query(query, (employee_id, employee_id))
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération BTs assignés avec TimeTracker: {e}")
+            return []
+    
+    def get_bt_details_for_timetracker(self, bt_id: int) -> Optional[Dict]:
+        """Récupère les détails d'un BT pour l'interface TimeTracker"""
+        try:
+            query = '''
+                SELECT * FROM view_bt_timetracker_integration
+                WHERE bt_id = ?
+            '''
+            result = self.execute_query(query, (bt_id,))
+            return dict(result[0]) if result else {}
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération détails BT pour TimeTracker: {e}")
+            return {}
+    
+    def create_time_entry_for_bt(self, employee_id: int, bt_id: int, notes: str = "") -> int:
+        """Crée une entrée de pointage liée à un BT"""
+        try:
+            # Récupérer les infos du BT pour le project_id
+            bt_info = self.execute_query(
+                "SELECT project_id FROM formulaires WHERE id = ? AND type_formulaire = 'BON_TRAVAIL'", 
+                (bt_id,)
+            )
+            
+            if not bt_info:
+                logger.error(f"BT {bt_id} non trouvé ou n'est pas un Bon de Travail")
+                return None
+            
+            project_id = bt_info[0]['project_id']
+            
+            # Créer l'entrée de pointage
+            query = '''
+                INSERT INTO time_entries 
+                (employee_id, project_id, formulaire_bt_id, punch_in, notes)
+                VALUES (?, ?, ?, ?, ?)
+            '''
+            
+            entry_id = self.execute_insert(query, (
+                employee_id,
+                project_id,
+                bt_id,
+                datetime.now().isoformat(),
+                notes
+            ))
+            
+            logger.info(f"✅ Pointage BT créé: entry_id={entry_id}, bt_id={bt_id}, employee_id={employee_id}")
+            return entry_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création pointage BT: {e}")
+            return None
+    
+    def close_time_entry_for_bt(self, entry_id: int, hourly_rate: float = None) -> bool:
+        """Ferme une entrée de pointage BT et calcule les coûts"""
+        try:
+            # Récupérer l'entrée
+            entry = self.execute_query(
+                "SELECT * FROM time_entries WHERE id = ? AND punch_out IS NULL", 
+                (entry_id,)
+            )
+            
+            if not entry:
+                logger.error(f"Time entry {entry_id} non trouvé ou déjà fermé")
+                return False
+            
+            entry = entry[0]
+            punch_in = datetime.fromisoformat(entry['punch_in'])
+            punch_out = datetime.now()
+            total_seconds = (punch_out - punch_in).total_seconds()
+            total_hours = total_seconds / 3600
+            
+            # Utiliser le hourly_rate fourni ou récupérer celui de l'employé
+            if hourly_rate is None:
+                emp_result = self.execute_query(
+                    "SELECT salaire FROM employees WHERE id = ?", 
+                    (entry['employee_id'],)
+                )
+                hourly_rate = (emp_result[0]['salaire'] / 2080) if emp_result and emp_result[0]['salaire'] else 25.0
+            
+            total_cost = total_hours * hourly_rate
+            
+            # Mettre à jour l'entrée
+            query = '''
+                UPDATE time_entries 
+                SET punch_out = ?, total_hours = ?, hourly_rate = ?, total_cost = ?
+                WHERE id = ?
+            '''
+            
+            affected = self.execute_update(query, (
+                punch_out.isoformat(),
+                total_hours,
+                hourly_rate,
+                total_cost,
+                entry_id
+            ))
+            
+            logger.info(f"✅ Pointage BT fermé: entry_id={entry_id}, heures={total_hours:.2f}, coût={total_cost:.2f}$")
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur fermeture pointage BT: {e}")
+            return False
+    
+    def get_statistiques_bt_timetracker(self, bt_id: int = None) -> Dict:
+        """Statistiques TimeTracker pour les BTs (global ou spécifique)"""
+        try:
+            if bt_id:
+                # Stats pour un BT spécifique
+                query = '''
+                    SELECT 
+                        COUNT(*) as nb_pointages,
+                        COUNT(DISTINCT employee_id) as nb_employes_distinct,
+                        COALESCE(SUM(total_hours), 0) as total_heures,
+                        COALESCE(SUM(total_cost), 0) as total_cout,
+                        COALESCE(AVG(total_hours), 0) as moyenne_heures_session,
+                        MIN(punch_in) as premier_pointage,
+                        MAX(punch_out) as dernier_pointage
+                    FROM time_entries 
+                    WHERE formulaire_bt_id = ? AND total_cost IS NOT NULL
+                '''
+                result = self.execute_query(query, (bt_id,))
+            else:
+                # Stats globales des BTs
+                query = '''
+                    SELECT 
+                        COUNT(*) as nb_pointages,
+                        COUNT(DISTINCT employee_id) as nb_employes_distinct,
+                        COUNT(DISTINCT formulaire_bt_id) as nb_bts_avec_pointages,
+                        COALESCE(SUM(total_hours), 0) as total_heures,
+                        COALESCE(SUM(total_cost), 0) as total_cout,
+                        COALESCE(AVG(total_hours), 0) as moyenne_heures_session
+                    FROM time_entries 
+                    WHERE formulaire_bt_id IS NOT NULL AND total_cost IS NOT NULL
+                '''
+                result = self.execute_query(query)
+            
+            return dict(result[0]) if result else {}
+            
+        except Exception as e:
+            logger.error(f"Erreur stats BT TimeTracker: {e}")
+            return {}
+
+    # =========================================================================
+    # MÉTHODES COMMUNICATION TIMETRACKER UNIFIÉES - NOUVELLES AJOUTÉES
+    # =========================================================================
+    
+    def get_employee_productivity_stats(self, employee_id: int) -> Dict:
+        """Statistiques de productivité d'un employé avec BTs"""
+        try:
+            query = '''
+                SELECT 
+                    COALESCE(SUM(te.total_hours), 0) as total_hours,
+                    COALESCE(SUM(CASE WHEN te.formulaire_bt_id IS NOT NULL THEN te.total_hours ELSE 0 END), 0) as bt_hours,
+                    COALESCE(SUM(te.total_cost), 0) as total_revenue,
+                    COALESCE(SUM(CASE WHEN te.formulaire_bt_id IS NOT NULL THEN te.total_cost ELSE 0 END), 0) as bt_revenue,
+                    COUNT(DISTINCT te.formulaire_bt_id) as bt_count,
+                    COALESCE(AVG(te.total_hours), 0) as avg_hours_per_session,
+                    COUNT(DISTINCT te.project_id) as projects_worked
+                FROM time_entries te
+                WHERE te.employee_id = ? AND te.total_cost IS NOT NULL
+            '''
+            result = self.execute_query(query, (employee_id,))
+            
+            if result:
+                stats = dict(result[0])
+                
+                # Calculer l'efficacité (estimation basique)
+                if stats['total_hours'] > 0:
+                    stats['efficiency'] = min(100, (stats['bt_hours'] / stats['total_hours']) * 120)  # Bonus BT
+                else:
+                    stats['efficiency'] = 0
+                    
+                return stats
+            return {
+                'total_hours': 0, 'bt_hours': 0, 'total_revenue': 0, 
+                'bt_revenue': 0, 'bt_count': 0, 'efficiency': 0
+            }
+        except Exception as e:
+            logger.error(f"Erreur stats productivité employé {employee_id}: {e}")
+            return {}
+
+    def get_unified_analytics(self, start_date, end_date) -> Dict:
+        """Analytics unifiés BT + TimeTracker pour période donnée"""
+        try:
+            # Données quotidiennes
+            daily_query = '''
+                SELECT 
+                    DATE(te.punch_in) as date,
+                    COALESCE(SUM(te.total_hours), 0) as total_hours,
+                    COALESCE(SUM(CASE WHEN te.formulaire_bt_id IS NOT NULL THEN te.total_hours ELSE 0 END), 0) as bt_hours,
+                    COALESCE(SUM(te.total_cost), 0) as total_revenue,
+                    COUNT(DISTINCT te.employee_id) as unique_employees,
+                    COUNT(DISTINCT te.formulaire_bt_id) as unique_bts
+                FROM time_entries te
+                WHERE DATE(te.punch_in) BETWEEN ? AND ?
+                AND te.total_cost IS NOT NULL
+                GROUP BY DATE(te.punch_in)
+                ORDER BY DATE(te.punch_in)
+            '''
+            daily_data = self.execute_query(daily_query, (start_date, end_date))
+            
+            # Performance employés
+            employee_query = '''
+                SELECT 
+                    e.prenom || ' ' || e.nom as name,
+                    COALESCE(SUM(te.total_hours), 0) as total_hours,
+                    COALESCE(SUM(CASE WHEN te.formulaire_bt_id IS NOT NULL THEN te.total_hours ELSE 0 END), 0) as bt_hours,
+                    COALESCE(SUM(te.total_cost), 0) as total_revenue,
+                    COUNT(DISTINCT te.formulaire_bt_id) as bt_count
+                FROM employees e
+                JOIN time_entries te ON e.id = te.employee_id
+                WHERE DATE(te.punch_in) BETWEEN ? AND ?
+                AND te.total_cost IS NOT NULL
+                GROUP BY e.id
+                ORDER BY total_revenue DESC
+            '''
+            employee_data = self.execute_query(employee_query, (start_date, end_date))
+            
+            # Calculs globaux
+            total_hours = sum(row['total_hours'] for row in daily_data)
+            bt_hours = sum(row['bt_hours'] for row in daily_data)
+            total_revenue = sum(row['total_revenue'] for row in daily_data)
+            
+            # Efficacité moyenne
+            avg_efficiency = 0
+            if len(employee_data) > 0:
+                efficiencies = []
+                for emp in employee_data:
+                    if emp['total_hours'] > 0:
+                        eff = (emp['bt_hours'] / emp['total_hours']) * 100
+                        efficiencies.append(eff)
+                avg_efficiency = sum(efficiencies) / len(efficiencies) if efficiencies else 0
+            
+            return {
+                'total_hours': total_hours,
+                'bt_hours': bt_hours,
+                'total_revenue': total_revenue,
+                'avg_efficiency': avg_efficiency,
+                'daily_breakdown': [dict(row) for row in daily_data],
+                'employee_performance': [dict(row) for row in employee_data],
+                'work_type_breakdown': {
+                    'Bons de Travail': bt_hours,
+                    'Projets Généraux': max(0, total_hours - bt_hours)
+                },
+                'profitability_analysis': {
+                    'bt_revenue': sum(emp['total_revenue'] for emp in employee_data if emp['bt_count'] > 0),
+                    'estimated_margin': 25.0,  # Placeholder
+                    'roi_timetracker': 15.0    # Placeholder
+                }
+            }
+        except Exception as e:
+            logger.error(f"Erreur analytics unifiés: {e}")
+            return {}
+
+    def marquer_bt_termine(self, bt_id: int, employee_id: int, notes: str) -> bool:
+        """Marque un BT comme terminé avec traçabilité"""
+        try:
+            # Vérifier que le BT existe et n'est pas déjà terminé
+            bt_check = self.execute_query(
+                "SELECT statut FROM formulaires WHERE id = ? AND type_formulaire = 'BON_TRAVAIL'",
+                (bt_id,)
+            )
+            
+            if not bt_check:
+                logger.error(f"BT #{bt_id} non trouvé")
+                return False
+            
+            if bt_check[0]['statut'] == 'TERMINÉ':
+                logger.info(f"BT #{bt_id} déjà terminé")
+                return True
+            
+            # Mettre à jour le statut
+            affected = self.execute_update(
+                "UPDATE formulaires SET statut = 'TERMINÉ', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (bt_id,)
+            )
+            
+            if affected > 0:
+                # Enregistrer dans l'historique des validations
+                self.execute_insert(
+                    """INSERT INTO formulaire_validations 
+                       (formulaire_id, employee_id, type_validation, ancien_statut, nouveau_statut, commentaires)
+                       VALUES (?, ?, 'TERMINAISON', ?, 'TERMINÉ', ?)""",
+                    (bt_id, employee_id, bt_check[0]['statut'], notes)
+                )
+                
+                # Mettre à jour tous les avancements à 100%
+                self.execute_update(
+                    "UPDATE bt_avancement SET pourcentage_realise = 100, updated_at = CURRENT_TIMESTAMP WHERE bt_id = ?",
+                    (bt_id,)
+                )
+                
+                # Libérer les postes de travail réservés
+                self.execute_update(
+                    "UPDATE bt_reservations_postes SET statut = 'LIBÉRÉ', date_liberation = CURRENT_TIMESTAMP WHERE bt_id = ? AND statut = 'RÉSERVÉ'",
+                    (bt_id,)
+                )
+                
+                logger.info(f"✅ BT #{bt_id} marqué terminé par employé #{employee_id}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Erreur marquage BT terminé: {e}")
+            return False
+
+    def recalculate_all_bt_progress(self) -> int:
+        """Recalcule la progression de tous les BTs basée sur TimeTracker"""
+        try:
+            count = 0
+            # Récupérer tous les BTs non terminés
+            bts = self.execute_query(
+                "SELECT id, metadonnees_json FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL' AND statut != 'TERMINÉ'"
+            )
+            
+            for bt in bts:
+                bt_id = bt['id']
+                
+                # Récupérer temps total pointé sur ce BT
+                time_result = self.execute_query(
+                    "SELECT COALESCE(SUM(total_hours), 0) as total_worked FROM time_entries WHERE formulaire_bt_id = ? AND total_cost IS NOT NULL",
+                    (bt_id,)
+                )
+                
+                if time_result:
+                    total_worked = time_result[0]['total_worked']
+                    
+                    # Récupérer temps estimé
+                    temps_estime = 0
+                    try:
+                        metadonnees = json.loads(bt['metadonnees_json'] or '{}')
+                        temps_estime = metadonnees.get('temps_estime_total', 0)
+                    except:
+                        pass
+                    
+                    # Calculer progression
+                    if temps_estime > 0:
+                        progression = min(100, (total_worked / temps_estime) * 100)
+                    else:
+                        # Si pas d'estimation, utiliser un calcul basique
+                        progression = min(100, total_worked * 12.5)  # 8h = 100%
+                    
+                    # Mettre à jour ou créer l'avancement global
+                    existing = self.execute_query(
+                        "SELECT id FROM bt_avancement WHERE bt_id = ? AND operation_id IS NULL",
+                        (bt_id,)
+                    )
+                    
+                    if existing:
+                        self.execute_update(
+                            "UPDATE bt_avancement SET pourcentage_realise = ?, updated_at = CURRENT_TIMESTAMP WHERE bt_id = ? AND operation_id IS NULL",
+                            (progression, bt_id)
+                        )
+                    else:
+                        self.execute_insert(
+                            "INSERT INTO bt_avancement (bt_id, pourcentage_realise) VALUES (?, ?)",
+                            (bt_id, progression)
+                        )
+                    
+                    count += 1
+            
+            logger.info(f"✅ {count} progressions BT recalculées")
+            return count
+        except Exception as e:
+            logger.error(f"Erreur recalcul progressions: {e}")
+            return 0
+
+    def sync_bt_timetracker_data(self) -> None:
+        """Synchronise les données BT ↔ TimeTracker"""
+        try:
+            # 1. Corriger les coûts manquants
+            missing_costs = self.execute_update("""
+                UPDATE time_entries 
+                SET total_cost = total_hours * COALESCE(hourly_rate, 95.0)
+                WHERE formulaire_bt_id IS NOT NULL 
+                AND total_hours IS NOT NULL 
+                AND total_cost IS NULL
+            """)
+            
+            # 2. Corriger les taux horaires manquants
+            missing_rates = self.execute_update("""
+                UPDATE time_entries 
+                SET hourly_rate = 95.0
+                WHERE formulaire_bt_id IS NOT NULL 
+                AND hourly_rate IS NULL
+            """)
+            
+            # 3. Mettre à jour les progressions
+            updated_progress = self.recalculate_all_bt_progress()
+            
+            # 4. Synchroniser les statuts de BT
+            bt_status_updates = self.execute_update("""
+                UPDATE formulaires 
+                SET statut = 'EN COURS'
+                WHERE type_formulaire = 'BON_TRAVAIL'
+                AND statut = 'VALIDÉ'
+                AND id IN (
+                    SELECT DISTINCT formulaire_bt_id 
+                    FROM time_entries 
+                    WHERE formulaire_bt_id IS NOT NULL 
+                    AND total_cost IS NOT NULL
+                )
+            """)
+            
+            logger.info(f"✅ Synchronisation terminée: {missing_costs} coûts, {missing_rates} taux, {updated_progress} progressions, {bt_status_updates} statuts")
+        except Exception as e:
+            logger.error(f"Erreur synchronisation: {e}")
+
+    def cleanup_empty_bt_sessions(self) -> int:
+        """Nettoie les sessions TimeTracker orphelines/vides sur BTs"""
+        try:
+            # 1. Sessions sans punch_out anciennes (>24h)
+            cutoff_24h = datetime.now() - timedelta(hours=24)
+            old_sessions = self.execute_update("""
+                DELETE FROM time_entries 
+                WHERE formulaire_bt_id IS NOT NULL 
+                AND punch_out IS NULL 
+                AND punch_in < ?
+            """, (cutoff_24h.isoformat(),))
+            
+            # 2. Sessions avec 0 heures
+            zero_hour_sessions = self.execute_update("""
+                DELETE FROM time_entries 
+                WHERE formulaire_bt_id IS NOT NULL 
+                AND (total_hours IS NULL OR total_hours <= 0)
+                AND punch_out IS NOT NULL
+            """)
+            
+            # 3. Sessions liées à des BTs inexistants
+            orphan_sessions = self.execute_update("""
+                DELETE FROM time_entries 
+                WHERE formulaire_bt_id IS NOT NULL 
+                AND formulaire_bt_id NOT IN (
+                    SELECT id FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL'
+                )
+            """)
+            
+            total_cleaned = old_sessions + zero_hour_sessions + orphan_sessions
+            logger.info(f"✅ {total_cleaned} session(s) nettoyée(s) ({old_sessions} anciennes + {zero_hour_sessions} vides + {orphan_sessions} orphelines)")
+            return total_cleaned
+        except Exception as e:
+            logger.error(f"Erreur nettoyage sessions: {e}")
+            return 0
+
+    def _update_bt_progress_from_timetracker_auto(self, bt_id: int):
+        """Méthode interne pour mise à jour automatique progression BT"""
+        try:
+            # Récupérer temps total pointé
+            result = self.execute_query(
+                "SELECT COALESCE(SUM(total_hours), 0) as total_worked FROM time_entries WHERE formulaire_bt_id = ? AND total_cost IS NOT NULL",
+                (bt_id,)
+            )
+            
+            if result:
+                total_worked = result[0]['total_worked']
+                
+                # Récupérer temps estimé
+                bt_info = self.execute_query(
+                    "SELECT metadonnees_json FROM formulaires WHERE id = ?",
+                    (bt_id,)
+                )
+                
+                if bt_info:
+                    try:
+                        metadonnees = json.loads(bt_info[0]['metadonnees_json'] or '{}')
+                        temps_estime = metadonnees.get('temps_estime_total', 0)
+                        
+                        if temps_estime > 0:
+                            progression = min(100, (total_worked / temps_estime) * 100)
+                            
+                            # Mettre à jour progression
+                            self.execute_update(
+                                "UPDATE bt_avancement SET pourcentage_realise = ? WHERE bt_id = ? AND operation_id IS NULL",
+                                (progression, bt_id)
+                            )
+                    except:
+                        pass
+        except Exception as e:
+            logger.error(f"Erreur mise à jour auto progression BT: {e}")
+
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES MODULE PRODUCTION UNIFIÉ - ÉTAPE 3
+    # =========================================================================
+    
+    def get_materials_by_project(self, project_id: int) -> List[Dict]:
+        """Récupère tous les matériaux d'un projet pour BOM (compatibilité production_management.py)"""
+        try:
+            query = '''
+                SELECT m.*, p.nom_projet
+                FROM materials m
+                LEFT JOIN projects p ON m.project_id = p.id
+                WHERE m.project_id = ?
+                ORDER BY m.id
+            '''
+            rows = self.execute_query(query, (project_id,))
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération matériaux projet {project_id}: {e}")
+            return []
+    
+    def add_material_to_project(self, project_id: int, material_data: Dict) -> Optional[int]:
+        """Ajoute un seul matériau (une ligne de BOM) à un projet."""
+        try:
+            query = '''
+                INSERT INTO materials 
+                (project_id, code_materiau, designation, quantite, unite, prix_unitaire, fournisseur)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            material_id = self.execute_insert(query, (
+                project_id,
+                material_data.get('code'),
+                material_data.get('designation'),
+                material_data.get('quantite'),
+                material_data.get('unite'),
+                material_data.get('prix_unitaire'),
+                material_data.get('fournisseur')
+            ))
+            
+            return material_id
+        except Exception as e:
+            logger.error(f"Erreur ajout matériau au projet {project_id}: {e}")
+            return None
+    
+    def get_bom_materials_with_suppliers(self, project_id: int) -> List[Dict]:
+        """Récupère les matériaux BOM avec informations fournisseurs"""
+        try:
+            query = '''
+                SELECT m.*, 
+                       c.nom as supplier_name, 
+                       f.delai_livraison_moyen as delai_livraison,
+                       f.evaluation_qualite as supplier_rating
+                FROM materials m
+                LEFT JOIN companies c ON m.fournisseur = c.nom
+                LEFT JOIN fournisseurs f ON c.id = f.company_id
+                WHERE m.project_id = ?
+                ORDER BY m.id
+            '''
+            rows = self.execute_query(query, (project_id,))
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération matériaux BOM avec fournisseurs: {e}")
+            return []
+    
+    def get_project_operations_with_work_centers(self, project_id: int) -> List[Dict]:
+        """Récupère les opérations d'un projet avec informations postes de travail"""
+        try:
+            query = '''
+                SELECT o.*, 
+                       wc.nom as work_center_name, 
+                       wc.departement as work_center_departement,
+                       wc.capacite_theorique,
+                       wc.cout_horaire as work_center_cout_horaire,
+                       wc.operateurs_requis,
+                       wc.competences_requises,
+                       wc.statut as work_center_statut,
+                       f.numero_document as bt_numero,
+                       f.statut as bt_statut
+                FROM operations o
+                LEFT JOIN work_centers wc ON o.work_center_id = wc.id
+                LEFT JOIN formulaires f ON o.formulaire_bt_id = f.id AND f.type_formulaire = 'BON_TRAVAIL'
+                WHERE o.project_id = ?
+                ORDER BY o.sequence_number, o.id
+            '''
+            rows = self.execute_query(query, (project_id,))
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération opérations projet avec postes: {e}")
+            return []
+    
+    def get_work_centers_for_routing(self) -> List[Dict]:
+        """Récupère tous les postes de travail disponibles pour l'itinéraire"""
+        try:
+            query = '''
+                SELECT wc.*,
+                       COUNT(DISTINCT o.id) as operations_assigned,
+                       COALESCE(AVG(te.hourly_rate), wc.cout_horaire) as taux_reel_moyen
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id AND te.total_cost IS NOT NULL
+                WHERE wc.statut = 'ACTIF'
+                GROUP BY wc.id
+                ORDER BY wc.departement, wc.nom
+            '''
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération postes pour itinéraire: {e}")
+            return []
+    
+    def get_manufacturing_routes_for_project(self, project_id: int) -> Dict[str, Any]:
+        """Récupère les gammes de fabrication complètes pour un projet"""
+        try:
+            # Récupérer les opérations avec détails postes
+            operations = self.get_project_operations_with_work_centers(project_id)
+            
+            if not operations:
+                return {
+                    'project_id': project_id,
+                    'operations': [],
+                    'statistics': {
+                        'total_operations': 0,
+                        'total_time_estimated': 0,
+                        'total_cost_estimated': 0,
+                        'departments_involved': [],
+                        'work_centers_used': []
+                    }
+                }
+            
+            # Calculer les statistiques
+            total_time = sum(op.get('temps_estime', 0) or 0 for op in operations)
+            total_cost = sum((op.get('temps_estime', 0) or 0) * (op.get('work_center_cout_horaire', 0) or 0) for op in operations)
+            departments = list(set(op.get('work_center_departement') for op in operations if op.get('work_center_departement')))
+            work_centers = list(set(op.get('work_center_name') for op in operations if op.get('work_center_name')))
+            
+            return {
+                'project_id': project_id,
+                'operations': operations,
+                'statistics': {
+                    'total_operations': len(operations),
+                    'total_time_estimated': total_time,
+                    'total_cost_estimated': total_cost,
+                    'departments_involved': departments,
+                    'work_centers_used': work_centers,
+                    'complexity_score': self._calculate_route_complexity(operations)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération gammes projet {project_id}: {e}")
+            return {}
+    
+    def _calculate_route_complexity(self, operations: List[Dict]) -> str:
+        """Calcule un score de complexité pour une gamme de fabrication"""
+        try:
+            if not operations:
+                return "SIMPLE"
+            
+            num_operations = len(operations)
+            num_departments = len(set(op.get('work_center_departement') for op in operations if op.get('work_center_departement')))
+            total_time = sum(op.get('temps_estime', 0) or 0 for op in operations)
+            
+            # Score basé sur nombre d'opérations, départements et temps
+            complexity_score = (num_operations * 0.3) + (num_departments * 0.4) + (total_time / 10 * 0.3)
+            
+            if complexity_score <= 3:
+                return "SIMPLE"
+            elif complexity_score <= 8:
+                return "MODÉRÉE"
+            elif complexity_score <= 15:
+                return "COMPLEXE"
+            else:
+                return "TRÈS_COMPLEXE"
+                
+        except Exception:
+            return "INDÉTERMINÉE"
+    
+    def get_inventory_items_for_bom(self, search_term: str = None) -> List[Dict]:
+        """Récupère les articles d'inventaire pour sélection dans BOM"""
+        try:
+            query = '''
+                SELECT id, nom, type_produit, quantite_imperial, quantite_metric,
+                       statut, description, fournisseur_principal, code_interne
+                FROM inventory_items
+            '''
+            params = []
+            
+            if search_term:
+                query += " WHERE nom LIKE ? OR code_interne LIKE ? OR description LIKE ?"
+                pattern = f"%{search_term}%"
+                params = [pattern, pattern, pattern]
+            
+            query += " ORDER BY nom"
+            
+            rows = self.execute_query(query, tuple(params) if params else None)
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération articles inventaire pour BOM: {e}")
+            return []
+    
+    def get_projects_summary_for_production(self) -> List[Dict]:
+        """Récupère un résumé des projets pour le module production"""
+        try:
+            query = '''
+                SELECT p.id, p.nom_projet, p.client_nom_cache, p.statut, p.priorite,
+                       p.date_soumis, p.date_prevu, p.prix_estime,
+                       COUNT(DISTINCT m.id) as nb_materiaux,
+                       COUNT(DISTINCT o.id) as nb_operations,
+                       COALESCE(SUM(m.quantite * m.prix_unitaire), 0) as cout_materiaux,
+                       COALESCE(SUM(o.temps_estime), 0) as temps_total_estime
+                FROM projects p
+                LEFT JOIN materials m ON p.id = m.project_id
+                LEFT JOIN operations o ON p.id = o.project_id
+                GROUP BY p.id
+                ORDER BY p.id DESC
+            '''
+            
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération résumé projets production: {e}")
+            return []
+    
+    def update_inventory_from_bom_consumption(self, project_id: int, consumption_data: List[Dict]) -> bool:
+        """Met à jour l'inventaire après consommation pour un projet (simulation)"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                for consumption in consumption_data:
+                    material_code = consumption.get('material_code')
+                    quantity_consumed = consumption.get('quantity_consumed', 0)
+                    
+                    # Trouver l'article d'inventaire correspondant
+                    inventory_item = self.execute_query(
+                        "SELECT * FROM inventory_items WHERE code_interne = ? OR nom LIKE ?",
+                        (material_code, f"%{material_code}%")
+                    )
+                    
+                    if inventory_item:
+                        item = dict(inventory_item[0])
+                        current_qty_metric = item['quantite_metric']
+                        new_qty_metric = max(0, current_qty_metric - quantity_consumed)
+                        
+                        # Mettre à jour la quantité
+                        cursor.execute(
+                            "UPDATE inventory_items SET quantite_metric = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (new_qty_metric, item['id'])
+                        )
+                        
+                        # Enregistrer dans l'historique
+                        cursor.execute(
+                            '''INSERT INTO inventory_history 
+                               (inventory_item_id, action, quantite_avant, quantite_apres, notes)
+                               VALUES (?, ?, ?, ?, ?)''',
+                            (item['id'], 'CONSOMMATION_PROJET', str(current_qty_metric), 
+                             str(new_qty_metric), f"Consommation projet #{project_id}")
+                        )
+                
+                conn.commit()
+                return True
+                
+        except Exception as e:
+            logger.error(f"Erreur mise à jour inventaire consommation: {e}")
+            return False
+    
+    def get_production_dashboard_metrics(self) -> Dict[str, Any]:
+        """Métriques spécifiques pour le dashboard du module production unifié"""
+        try:
+            metrics = {
+                'inventaire': {
+                    'total_articles': 0,
+                    'articles_critiques': 0,
+                    'valeur_totale_stock': 0.0,
+                    'articles_sans_stock': 0
+                },
+                'nomenclatures': {
+                    'projets_avec_bom': 0,
+                    'materiaux_total': 0,
+                    'valeur_moyenne_bom': 0.0,
+                    'fournisseurs_utilises': 0
+                },
+                'itineraires': {
+                    'projets_avec_operations': 0,
+                    'operations_total': 0,
+                    'temps_total_planifie': 0.0,
+                    'postes_utilises': 0
+                }
+            }
+            
+            # Métriques inventaire
+            inv_result = self.execute_query('''
+                SELECT 
+                    COUNT(*) as total_articles,
+                    COUNT(CASE WHEN statut IN ('CRITIQUE', 'FAIBLE', 'ÉPUISÉ') THEN 1 END) as articles_critiques,
+                    COUNT(CASE WHEN quantite_metric <= 0.001 THEN 1 END) as articles_sans_stock
+                FROM inventory_items
+            ''')
+            if inv_result:
+                metrics['inventaire'].update(dict(inv_result[0]))
+            
+            # Métriques nomenclatures
+            bom_result = self.execute_query('''
+                SELECT 
+                    COUNT(DISTINCT project_id) as projets_avec_bom,
+                    COUNT(*) as materiaux_total,
+                    COALESCE(AVG(quantite * prix_unitaire), 0) as valeur_moyenne_bom,
+                    COUNT(DISTINCT fournisseur) as fournisseurs_utilises
+                FROM materials
+                WHERE project_id IS NOT NULL
+            ''')
+            if bom_result:
+                metrics['nomenclatures'].update(dict(bom_result[0]))
+            
+            # Métriques itinéraires
+            routing_result = self.execute_query('''
+                SELECT 
+                    COUNT(DISTINCT project_id) as projets_avec_operations,
+                    COUNT(*) as operations_total,
+                    COALESCE(SUM(temps_estime), 0) as temps_total_planifie,
+                    COUNT(DISTINCT work_center_id) as postes_utilises
+                FROM operations
+                WHERE project_id IS NOT NULL
+            ''')
+            if routing_result:
+                metrics['itineraires'].update(dict(routing_result[0]))
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Erreur métriques dashboard production: {e}")
+            return {}
+
+    def backup_json_files(self):
+        """Sauvegarde tous les fichiers JSON avant migration"""
+        json_files = [
+            "projets_data.json",
+            "crm_data.json", 
+            "employees_data.json",
+            "inventaire_v2.json",
+            "timetracker.db"
+        ]
+        
+        if not os.path.exists(self.backup_dir):
+            os.makedirs(self.backup_dir)
+        
+        backup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        for file in json_files:
+            if os.path.exists(file):
+                backup_name = f"{self.backup_dir}/{file}.backup_{backup_timestamp}"
+                shutil.copy2(file, backup_name)
+                logger.info(f"Sauvegarde créée : {backup_name}")
+        
+        logger.info(f"Sauvegarde JSON complète dans {self.backup_dir}")
+    
+    def get_connection(self) -> sqlite3.Connection:
+        """Retourne une connexion à la base de données"""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON")
+        return conn
+    
+    def execute_query(self, query: str, params: tuple = None) -> List[Dict[str, Any]]:
+        """Exécute une requête SELECT et retourne les résultats sous forme de dictionnaires"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            # Convertir les sqlite3.Row en dictionnaires pour compatibilité avec .get()
+            rows = cursor.fetchall()
+            return [dict(row) for row in rows]
+    
+    def execute_update(self, query: str, params: tuple = None) -> int:
+        """Exécute une requête INSERT/UPDATE/DELETE et retourne le nombre de lignes affectées"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            conn.commit()
+            return cursor.rowcount
+    
+    def execute_insert(self, query: str, params: tuple = None) -> int:
+        """Exécute un INSERT et retourne l'ID de la nouvelle ligne"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            conn.commit()
+            return cursor.lastrowid
+    
+    def get_table_count(self, table_name: str) -> int:
+        """Retourne le nombre d'enregistrements dans une table"""
+        result = self.execute_query(f"SELECT COUNT(*) as count FROM {table_name}")
+        return result[0]['count'] if result else 0
+    
+    def get_migration_status(self) -> Dict[str, int]:
+        """Retourne le statut de migration de toutes les tables"""
+        tables = [
+            'companies', 'contacts', 'projects', 'employees', 
+            'employee_competences', 'work_centers', 'operations',
+            'materials', 'inventory_items', 'interactions',
+            'project_assignments', 'time_entries',
+            # Tables formulaires
+            'formulaires', 'formulaire_lignes', 'formulaire_validations',
+            'formulaire_pieces_jointes', 'formulaire_templates',
+            'fournisseurs', 'approvisionnements',
+            # Tables BT spécialisées
+            'bt_assignations', 'bt_reservations_postes', 'bt_avancement'
+        ]
+        
+        status = {}
+        for table in tables:
+            try:
+                status[table] = self.get_table_count(table)
+            except Exception as e:
+                logger.warning(f"Erreur lecture table {table}: {e}")
+                status[table] = 0
+        
+        return status
+    
+    def validate_integrity(self) -> Dict[str, bool]:
+        """Valide l'intégrité des relations entre tables"""
+        checks = {}
+        
+        try:
+            # Vérifier les clés étrangères
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # Projects → Companies
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM projects p
+                    WHERE p.client_company_id IS NOT NULL 
+                    AND p.client_company_id NOT IN (SELECT id FROM companies)
+                ''')
+                checks['projects_companies_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Operations → Projects
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM operations o
+                    WHERE o.project_id NOT IN (SELECT id FROM projects)
+                ''')
+                checks['operations_projects_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Operations → Work Centers
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM operations o
+                    WHERE o.work_center_id IS NOT NULL
+                    AND o.work_center_id NOT IN (SELECT id FROM work_centers)
+                ''')
+                checks['operations_work_centers_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # NOUVEAU : Operations → Formulaires BT
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM operations o
+                    WHERE o.formulaire_bt_id IS NOT NULL
+                    AND o.formulaire_bt_id NOT IN (SELECT id FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL')
+                ''')
+                checks['operations_bt_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Materials → Projects
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM materials m
+                    WHERE m.project_id NOT IN (SELECT id FROM projects)
+                ''')
+                checks['materials_projects_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Employees hierarchy
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM employees e
+                    WHERE e.manager_id IS NOT NULL 
+                    AND e.manager_id NOT IN (SELECT id FROM employees)
+                ''')
+                checks['employees_hierarchy_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # VÉRIFICATIONS MODULE FORMULAIRES
+                
+                # Formulaires → Projects
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM formulaires f
+                    WHERE f.project_id IS NOT NULL 
+                    AND f.project_id NOT IN (SELECT id FROM projects)
+                ''')
+                checks['formulaires_projects_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Formulaires → Companies
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM formulaires f
+                    WHERE f.company_id IS NOT NULL 
+                    AND f.company_id NOT IN (SELECT id FROM companies)
+                ''')
+                checks['formulaires_companies_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Formulaires → Employees
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM formulaires f
+                    WHERE f.employee_id IS NOT NULL 
+                    AND f.employee_id NOT IN (SELECT id FROM employees)
+                ''')
+                checks['formulaires_employees_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Formulaire_lignes → Formulaires
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM formulaire_lignes fl
+                    WHERE fl.formulaire_id NOT IN (SELECT id FROM formulaires)
+                ''')
+                checks['formulaire_lignes_formulaires_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Formulaire_validations → Formulaires
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM formulaire_validations fv
+                    WHERE fv.formulaire_id NOT IN (SELECT id FROM formulaires)
+                ''')
+                checks['formulaire_validations_formulaires_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Fournisseurs → Companies
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM fournisseurs f
+                    WHERE f.company_id NOT IN (SELECT id FROM companies)
+                ''')
+                checks['fournisseurs_companies_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # BT Assignations → Formulaires
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM bt_assignations bta
+                    WHERE bta.bt_id NOT IN (SELECT id FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL')
+                ''')
+                checks['bt_assignations_formulaires_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # BT Réservations → Work Centers
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM bt_reservations_postes btr
+                    WHERE btr.work_center_id NOT IN (SELECT id FROM work_centers)
+                ''')
+                checks['bt_reservations_work_centers_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # ÉTAPE 2 : Vérifications intégration TimeTracker ↔ BT
+                
+                # Time entries avec BT → Formulaires BT
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM time_entries te
+                    WHERE te.formulaire_bt_id IS NOT NULL 
+                    AND te.formulaire_bt_id NOT IN (
+                        SELECT id FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL'
+                    )
+                ''')
+                checks['time_entries_bt_fk'] = cursor.fetchone()['orphans'] == 0
+                
+                # Time entries BT sans employee_id
+                cursor.execute('''
+                    SELECT COUNT(*) as orphans FROM time_entries te
+                    WHERE te.formulaire_bt_id IS NOT NULL 
+                    AND te.employee_id IS NULL
+                ''')
+                checks['time_entries_bt_employee_required'] = cursor.fetchone()['orphans'] == 0
+                
+                # INTERFACE UNIFIÉE : Vérifications postes de travail
+                
+                # Work centers avec noms uniques
+                cursor.execute('''
+                    SELECT COUNT(*) - COUNT(DISTINCT nom) as duplicates
+                    FROM work_centers
+                ''')
+                checks['work_centers_unique_names'] = cursor.fetchone()['duplicates'] == 0
+                
+        except Exception as e:
+            logger.error(f"Erreur validation intégrité: {e}")
+            checks['error'] = str(e)
+        
+        return checks
+    
+    def get_schema_info(self) -> Dict[str, Any]:
+        """Retourne des informations sur le schéma de la base"""
+        info = {
+            'database_file': self.db_path,
+            'file_size_mb': round(os.path.getsize(self.db_path) / (1024*1024), 2) if os.path.exists(self.db_path) else 0,
+            'tables': {},
+            'total_records': 0,
+            'formulaires_info': {},
+            'fournisseurs_info': {},
+            'stocks_critiques': 0,
+            'bt_info': {},
+            'timetracker_bt_integration': {},  # ÉTAPE 2
+            'work_centers_unified': {},  # INTERFACE UNIFIÉE
+            'production_module': {},  # ÉTAPE 3
+            'operations_bt_integration': {},  # NOUVEAU : Intégration Operations ↔ BT
+            'communication_tt_integration': {},  # NOUVEAU : Méthodes Communication TT
+            'corrections_appliquees': True,
+            'etape_2_complete': True,  # ÉTAPE 2
+            'etape_3_complete': True,  # ÉTAPE 3
+            'interface_unifiee_complete': True,  # INTERFACE UNIFIÉE
+            'operations_bt_integration_complete': True,  # NOUVEAU
+            'communication_tt_complete': True  # NOUVEAU
+        }
+        
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Liste des tables
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = [row['name'] for row in cursor.fetchall()]
+            
+            for table in tables:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) as count FROM {table}")
+                    count = cursor.fetchone()['count']
+                    info['tables'][table] = count
+                    info['total_records'] += count
+                except Exception as e:
+                    logger.warning(f"Erreur lecture table {table}: {e}")
+                    info['tables'][table] = 0
+            
+            # Informations spécifiques aux formulaires
+            if 'formulaires' in tables:
+                cursor.execute('''
+                    SELECT type_formulaire, COUNT(*) as count 
+                    FROM formulaires 
+                    GROUP BY type_formulaire
+                ''')
+                for row in cursor.fetchall():
+                    info['formulaires_info'][row['type_formulaire']] = row['count']
+            
+            # Informations sur les fournisseurs
+            if 'fournisseurs' in tables:
+                cursor.execute('SELECT COUNT(*) as count FROM fournisseurs WHERE est_actif = TRUE')
+                result = cursor.fetchone()
+                info['fournisseurs_info']['actifs'] = result['count'] if result else 0
+            
+            # Stocks critiques
+            if 'inventory_items' in tables:
+                cursor.execute("SELECT COUNT(*) as count FROM inventory_items WHERE statut IN ('CRITIQUE', 'FAIBLE', 'ÉPUISÉ')")
+                result = cursor.fetchone()
+                info['stocks_critiques'] = result['count'] if result else 0
+            
+            # Informations BT
+            if 'bt_assignations' in tables and 'bt_reservations_postes' in tables:
+                cursor.execute('SELECT COUNT(*) as count FROM bt_assignations')
+                result = cursor.fetchone()
+                info['bt_info']['assignations'] = result['count'] if result else 0
+                
+                cursor.execute('SELECT COUNT(*) as count FROM bt_reservations_postes')
+                result = cursor.fetchone()
+                info['bt_info']['reservations'] = result['count'] if result else 0
+                
+                cursor.execute('SELECT COUNT(*) as count FROM bt_avancement')
+                result = cursor.fetchone()
+                info['bt_info']['avancements'] = result['count'] if result else 0
+            
+            # ÉTAPE 2 : Informations intégration TimeTracker ↔ BT
+            if 'time_entries' in tables:
+                # Pointages liés à des BT
+                cursor.execute('SELECT COUNT(*) as count FROM time_entries WHERE formulaire_bt_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['timetracker_bt_integration']['pointages_bt'] = result['count'] if result else 0
+                
+                # BT avec pointages
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT formulaire_bt_id) as count 
+                    FROM time_entries 
+                    WHERE formulaire_bt_id IS NOT NULL
+                ''')
+                result = cursor.fetchone()
+                info['timetracker_bt_integration']['bt_avec_pointages'] = result['count'] if result else 0
+                
+                # Heures totales sur BT
+                cursor.execute('''
+                    SELECT COALESCE(SUM(total_hours), 0) as total_heures,
+                           COALESCE(SUM(total_cost), 0) as total_cout
+                    FROM time_entries 
+                    WHERE formulaire_bt_id IS NOT NULL
+                ''')
+                result = cursor.fetchone()
+                if result:
+                    info['timetracker_bt_integration']['total_heures_bt'] = round(result['total_heures'], 2)
+                    info['timetracker_bt_integration']['total_cout_bt'] = round(result['total_cout'], 2)
+                
+                # Employés actifs sur BT
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT employee_id) as count
+                    FROM time_entries 
+                    WHERE formulaire_bt_id IS NOT NULL
+                ''')
+                result = cursor.fetchone()
+                info['timetracker_bt_integration']['employes_actifs_bt'] = result['count'] if result else 0
+            
+            # INTERFACE UNIFIÉE : Informations postes de travail
+            if 'work_centers' in tables:
+                cursor.execute('SELECT COUNT(*) as count FROM work_centers')
+                result = cursor.fetchone()
+                info['work_centers_unified']['total_postes'] = result['count'] if result else 0
+                
+                cursor.execute('SELECT COUNT(*) as count FROM work_centers WHERE statut = "ACTIF"')
+                result = cursor.fetchone()
+                info['work_centers_unified']['postes_actifs'] = result['count'] if result else 0
+                
+                cursor.execute('SELECT COALESCE(SUM(capacite_theorique), 0) as capacite FROM work_centers')
+                result = cursor.fetchone()
+                info['work_centers_unified']['capacite_totale'] = round(result['capacite'], 2) if result else 0
+                
+                # Postes avec pointages TimeTracker
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT wc.id) as count
+                    FROM work_centers wc
+                    JOIN operations o ON wc.id = o.work_center_id
+                    JOIN time_entries te ON o.id = te.operation_id
+                    WHERE te.total_cost IS NOT NULL
+                ''')
+                result = cursor.fetchone()
+                info['work_centers_unified']['postes_avec_pointages'] = result['count'] if result else 0
+            
+            # ÉTAPE 3 : Informations module production unifié
+            if 'materials' in tables and 'operations' in tables:
+                # Projets avec BOM (nomenclatures)
+                cursor.execute('SELECT COUNT(DISTINCT project_id) as count FROM materials WHERE project_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['production_module']['projets_avec_bom'] = result['count'] if result else 0
+                
+                # Projets avec itinéraires
+                cursor.execute('SELECT COUNT(DISTINCT project_id) as count FROM operations WHERE project_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['production_module']['projets_avec_itineraires'] = result['count'] if result else 0
+                
+                # Matériaux total dans BOM
+                cursor.execute('SELECT COUNT(*) as count FROM materials')
+                result = cursor.fetchone()
+                info['production_module']['materiaux_total'] = result['count'] if result else 0
+                
+                # Opérations total dans itinéraires
+                cursor.execute('SELECT COUNT(*) as count FROM operations')
+                result = cursor.fetchone()
+                info['production_module']['operations_total'] = result['count'] if result else 0
+                
+                # Valeur totale des BOM
+                cursor.execute('SELECT COALESCE(SUM(quantite * prix_unitaire), 0) as valeur FROM materials')
+                result = cursor.fetchone()
+                info['production_module']['valeur_totale_bom'] = round(result['valeur'], 2) if result else 0
+                
+                # Temps total planifié
+                cursor.execute('SELECT COALESCE(SUM(temps_estime), 0) as temps FROM operations')
+                result = cursor.fetchone()
+                info['production_module']['temps_total_planifie'] = round(result['temps'], 2) if result else 0
+            
+            # NOUVEAU : Informations intégration Operations ↔ BT
+            if 'operations' in tables:
+                # Opérations liées à des BT
+                cursor.execute('SELECT COUNT(*) as count FROM operations WHERE formulaire_bt_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['operations_bt_integration']['operations_liees_bt'] = result['count'] if result else 0
+                
+                # BT avec opérations
+                cursor.execute('SELECT COUNT(DISTINCT formulaire_bt_id) as count FROM operations WHERE formulaire_bt_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['operations_bt_integration']['bt_avec_operations'] = result['count'] if result else 0
+                
+                # Temps total des opérations BT
+                cursor.execute('SELECT COALESCE(SUM(temps_estime), 0) as temps FROM operations WHERE formulaire_bt_id IS NOT NULL')
+                result = cursor.fetchone()
+                info['operations_bt_integration']['temps_total_operations_bt'] = round(result['temps'], 2) if result else 0
+                
+                # Postes utilisés par les opérations BT
+                cursor.execute('''
+                    SELECT COUNT(DISTINCT work_center_id) as count 
+                    FROM operations 
+                    WHERE formulaire_bt_id IS NOT NULL AND work_center_id IS NOT NULL
+                ''')
+                result = cursor.fetchone()
+                info['operations_bt_integration']['postes_utilises_bt'] = result['count'] if result else 0
+            
+            # NOUVEAU : Informations méthodes communication TimeTracker
+            info['communication_tt_integration'] = {
+                'get_employee_productivity_stats': 'DISPONIBLE',
+                'get_unified_analytics': 'DISPONIBLE',
+                'marquer_bt_termine': 'DISPONIBLE',
+                'recalculate_all_bt_progress': 'DISPONIBLE',
+                'sync_bt_timetracker_data': 'DISPONIBLE',
+                'cleanup_empty_bt_sessions': 'DISPONIBLE',
+                'methodes_communication_count': 6
+            }
+        
+        return info
+    
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES AU MODULE FORMULAIRES
+    # =========================================================================
+    
+    def get_formulaires_statistics(self) -> Dict[str, Any]:
+        """Retourne des statistiques complètes sur les formulaires"""
+        try:
+            stats = {
+                'total_formulaires': 0,
+                'par_type': {},
+                'par_statut': {},
+                'montant_total': 0.0,
+                'tendances_mensuelles': {},
+                'en_retard': 0,
+                'en_attente_validation': 0,
+                'top_fournisseurs': [],
+                'conversion_ba_bc': {'total_ba': 0, 'convertis_bc': 0, 'taux_conversion': 0.0},
+                'bt_statistiques': {'total_bt': 0, 'assignations': 0, 'postes_reserves': 0},
+                'bt_timetracker_stats': {}  # ÉTAPE 2
+            }
+            
+            # Statistiques globales
+            query = '''
+                SELECT 
+                    type_formulaire,
+                    statut,
+                    COUNT(*) as count,
+                    SUM(montant_total) as total_montant,
+                    strftime('%Y-%m', date_creation) as mois
+                FROM formulaires
+                GROUP BY type_formulaire, statut, mois
+                ORDER BY mois DESC
+            '''
+            
+            rows = self.execute_query(query)
+            
+            for row in rows:
+                # Par type
+                type_form = row['type_formulaire']
+                if type_form not in stats['par_type']:
+                    stats['par_type'][type_form] = {'count': 0, 'montant': 0.0}
+                stats['par_type'][type_form]['count'] += row['count']
+                stats['par_type'][type_form]['montant'] += row['total_montant'] or 0
+                
+                # Par statut
+                statut = row['statut']
+                if statut not in stats['par_statut']:
+                    stats['par_statut'][statut] = 0
+                stats['par_statut'][statut] += row['count']
+                
+                # Totaux
+                stats['total_formulaires'] += row['count']
+                stats['montant_total'] += row['total_montant'] or 0
+                
+                # Tendances mensuelles
+                mois = row['mois']
+                if mois and mois not in stats['tendances_mensuelles']:
+                    stats['tendances_mensuelles'][mois] = {'count': 0, 'montant': 0.0}
+                if mois:
+                    stats['tendances_mensuelles'][mois]['count'] += row['count']
+                    stats['tendances_mensuelles'][mois]['montant'] += row['total_montant'] or 0
+            
+            # Formulaires en retard
+            query_retard = '''
+                SELECT COUNT(*) as count FROM formulaires 
+                WHERE date_echeance < DATE('now') 
+                AND statut NOT IN ('TERMINÉ', 'ANNULÉ')
+            '''
+            result = self.execute_query(query_retard)
+            stats['en_retard'] = result[0]['count'] if result else 0
+            
+            # Formulaires en attente de validation
+            query_attente = '''
+                SELECT COUNT(*) as count FROM formulaires 
+                WHERE statut IN ('BROUILLON', 'VALIDÉ')
+            '''
+            result = self.execute_query(query_attente)
+            stats['en_attente_validation'] = result[0]['count'] if result else 0
+            
+            # Top fournisseurs
+            query_fournisseurs = '''
+                SELECT c.nom, COUNT(f.id) as nb_commandes, SUM(f.montant_total) as montant_total
+                FROM formulaires f
+                JOIN companies c ON f.company_id = c.id
+                WHERE f.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+                GROUP BY c.id, c.nom
+                ORDER BY montant_total DESC
+                LIMIT 5
+            '''
+            rows_fournisseurs = self.execute_query(query_fournisseurs)
+            stats['top_fournisseurs'] = [dict(row) for row in rows_fournisseurs]
+            
+            # Statistiques conversion BA → BC
+            query_ba = "SELECT COUNT(*) as count FROM formulaires WHERE type_formulaire = 'BON_ACHAT'"
+            result_ba = self.execute_query(query_ba)
+            stats['conversion_ba_bc']['total_ba'] = result_ba[0]['count'] if result_ba else 0
+            
+            query_bc = '''
+                SELECT COUNT(*) as count FROM formulaires 
+                WHERE type_formulaire = 'BON_COMMANDE' 
+                AND metadonnees_json LIKE '%ba_source_id%'
+            '''
+            result_bc = self.execute_query(query_bc)
+            stats['conversion_ba_bc']['convertis_bc'] = result_bc[0]['count'] if result_bc else 0
+            
+            if stats['conversion_ba_bc']['total_ba'] > 0:
+                stats['conversion_ba_bc']['taux_conversion'] = (
+                    stats['conversion_ba_bc']['convertis_bc'] / stats['conversion_ba_bc']['total_ba'] * 100
+                )
+            
+            # Statistiques BT spécialisées
+            query_bt = "SELECT COUNT(*) as count FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL'"
+            result_bt = self.execute_query(query_bt)
+            stats['bt_statistiques']['total_bt'] = result_bt[0]['count'] if result_bt else 0
+            
+            query_bt_assignations = "SELECT COUNT(*) as count FROM bt_assignations"
+            result_bt_assign = self.execute_query(query_bt_assignations)
+            stats['bt_statistiques']['assignations'] = result_bt_assign[0]['count'] if result_bt_assign else 0
+            
+            query_bt_postes = "SELECT COUNT(*) as count FROM bt_reservations_postes"
+            result_bt_postes = self.execute_query(query_bt_postes)
+            stats['bt_statistiques']['postes_reserves'] = result_bt_postes[0]['count'] if result_bt_postes else 0
+            
+            # ÉTAPE 2 : Statistiques BT ↔ TimeTracker
+            query_bt_tt = '''
+                SELECT 
+                    COUNT(DISTINCT te.formulaire_bt_id) as bt_avec_pointages,
+                    COUNT(te.id) as total_sessions_bt,
+                    COALESCE(SUM(te.total_hours), 0) as total_heures_bt,
+                    COALESCE(SUM(te.total_cost), 0) as total_cout_bt,
+                    COALESCE(AVG(te.total_hours), 0) as moyenne_heures_session
+                FROM time_entries te
+                WHERE te.formulaire_bt_id IS NOT NULL
+            '''
+            result_bt_tt = self.execute_query(query_bt_tt)
+            if result_bt_tt:
+                stats['bt_timetracker_stats'] = dict(result_bt_tt[0])
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Erreur statistiques formulaires: {e}")
+            return {}
+    
+    def get_formulaires_en_attente_validation(self, employee_id: int = None) -> List[Dict]:
+        """Retourne les formulaires en attente de validation"""
+        try:
+            query = '''
+                SELECT * FROM view_formulaires_en_attente
+                WHERE 1=1
+            '''
+            
+            params = []
+            if employee_id:
+                query += " AND employee_id = ?"
+                params.append(employee_id)
+            
+            query += " LIMIT 50"  # Limiter pour performance
+            
+            rows = self.execute_query(query, tuple(params))
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur formulaires en attente: {e}")
+            return []
+    
+    def get_formulaire_with_details(self, formulaire_id: int) -> Dict:
+        """Récupère un formulaire avec tous ses détails (vue complète)"""
+        try:
+            query = '''
+                SELECT * FROM view_formulaires_complets
+                WHERE id = ?
+            '''
+            result = self.execute_query(query, (formulaire_id,))
+            if not result:
+                return {}
+            
+            formulaire = dict(result[0])
+            
+            # Ajouter les lignes de détail
+            query_lignes = '''
+                SELECT * FROM formulaire_lignes 
+                WHERE formulaire_id = ? 
+                ORDER BY sequence_ligne
+            '''
+            lignes = self.execute_query(query_lignes, (formulaire_id,))
+            formulaire['lignes'] = [dict(ligne) for ligne in lignes]
+            
+            # Ajouter l'historique des validations
+            query_validations = '''
+                SELECT fv.*, e.prenom || ' ' || e.nom as validator_nom,
+                       e.poste as validator_poste
+                FROM formulaire_validations fv
+                LEFT JOIN employees e ON fv.employee_id = e.id
+                WHERE fv.formulaire_id = ?
+                ORDER BY fv.date_validation DESC
+            '''
+            validations = self.execute_query(query_validations, (formulaire_id,))
+            formulaire['validations'] = [dict(val) for val in validations]
+            
+            # Si c'est un BT, ajouter les assignations et réservations
+            if formulaire.get('type_formulaire') == 'BON_TRAVAIL':
+                # Assignations employés
+                query_assignations = '''
+                    SELECT bta.*, e.prenom || ' ' || e.nom as employe_nom, e.poste as employe_poste
+                    FROM bt_assignations bta
+                    LEFT JOIN employees e ON bta.employe_id = e.id
+                    WHERE bta.bt_id = ?
+                    ORDER BY bta.date_assignation DESC
+                '''
+                assignations = self.execute_query(query_assignations, (formulaire_id,))
+                formulaire['assignations'] = [dict(assign) for assign in assignations]
+                
+                # Réservations postes
+                query_reservations = '''
+                    SELECT btr.*, wc.nom as poste_nom, wc.departement as poste_departement
+                    FROM bt_reservations_postes btr
+                    LEFT JOIN work_centers wc ON btr.work_center_id = wc.id
+                    WHERE btr.bt_id = ?
+                    ORDER BY btr.date_reservation DESC
+                '''
+                reservations = self.execute_query(query_reservations, (formulaire_id,))
+                formulaire['reservations_postes'] = [dict(res) for res in reservations]
+                
+                # ÉTAPE 2 : Ajouter les statistiques TimeTracker
+                formulaire['timetracker_stats'] = self.get_statistiques_bt_timetracker(formulaire_id)
+                
+                # NOUVEAU : Ajouter les opérations liées au BT
+                formulaire['operations_bt'] = self.get_operations_by_bt(formulaire_id)
+            
+            return formulaire
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération formulaire détaillé: {e}")
+            return {}
+    
+    def export_formulaire_data(self, formulaire_id: int) -> Dict:
+        """Exporte toutes les données d'un formulaire pour génération PDF/Excel"""
+        try:
+            formulaire = self.get_formulaire_with_details(formulaire_id)
+            if not formulaire:
+                return {}
+            
+            # Enrichir avec données pour export
+            export_data = {
+                'formulaire': formulaire,
+                'export_date': datetime.now().isoformat(),
+                'export_by': 'System',  # À enrichir avec utilisateur courant
+                'formatted_data': {
+                    'numero_complet': formulaire.get('numero_document', ''),
+                    'type_libelle': self._get_type_formulaire_libelle(formulaire.get('type_formulaire', '')),
+                    'montant_total_formate': f"{formulaire.get('montant_total', 0):,.2f} $ CAD",
+                    'statut_couleur': self._get_statut_couleur(formulaire.get('statut', '')),
+                    'priorite_icon': self._get_priorite_icon(formulaire.get('priorite', ''))
+                }
+            }
+            
+            return export_data
+            
+        except Exception as e:
+            logger.error(f"Erreur export formulaire: {e}")
+            return {}
+    
+    def _get_type_formulaire_libelle(self, type_formulaire: str) -> str:
+        """Retourne le libellé complet d'un type de formulaire"""
+        libelles = {
+            'BON_TRAVAIL': 'Bon de Travail',
+            'BON_ACHAT': "Bon d'Achats",
+            'BON_COMMANDE': 'Bon de Commande',
+            'DEMANDE_PRIX': 'Demande de Prix',
+            'ESTIMATION': 'Estimation'
+        }
+        return libelles.get(type_formulaire, type_formulaire)
+    
+    def _get_statut_couleur(self, statut: str) -> str:
+        """Retourne la couleur associée à un statut"""
+        couleurs = {
+            'BROUILLON': '#f59e0b',
+            'VALIDÉ': '#3b82f6',
+            'ENVOYÉ': '#8b5cf6',
+            'APPROUVÉ': '#10b981',
+            'TERMINÉ': '#059669',
+            'ANNULÉ': '#ef4444'
+        }
+        return couleurs.get(statut, '#6b7280')
+    
+    def _get_priorite_icon(self, priorite: str) -> str:
+        """Retourne l'icône associée à une priorité"""
+        icons = {
+            'NORMAL': '🟢',
+            'URGENT': '🟡',
+            'CRITIQUE': '🔴'
+        }
+        return icons.get(priorite, '⚪')
+    
+    def dupliquer_formulaire(self, formulaire_id: int, nouveau_type: str = None) -> int:
+        """Duplique un formulaire existant avec nouveau numéro"""
+        try:
+            # Récupérer le formulaire original avec détails
+            formulaire_original = self.get_formulaire_with_details(formulaire_id)
+            if not formulaire_original:
+                return None
+            
+            # Déterminer le nouveau type ou garder l'original
+            type_formulaire = nouveau_type or formulaire_original['type_formulaire']
+            
+            # Générer nouveau numéro
+            nouveau_numero = self._generer_numero_document(type_formulaire)
+            
+            # Créer le nouveau formulaire
+            query_insert = '''
+                INSERT INTO formulaires 
+                (type_formulaire, numero_document, project_id, company_id, employee_id,
+                 statut, priorite, date_echeance, notes, metadonnees_json)
+                VALUES (?, ?, ?, ?, ?, 'BROUILLON', ?, ?, ?, ?)
+            '''
+            
+            nouveau_id = self.execute_insert(query_insert, (
+                type_formulaire,
+                nouveau_numero,
+                formulaire_original.get('project_id'),
+                formulaire_original.get('company_id'),
+                formulaire_original.get('employee_id'),
+                formulaire_original.get('priorite'),
+                formulaire_original.get('date_echeance'),
+                f"Copie de {formulaire_original.get('numero_document', '')} - {formulaire_original.get('notes', '')}",
+                formulaire_original.get('metadonnees_json')
+            ))
+            
+            # Dupliquer les lignes de détail
+            if nouveau_id and formulaire_original.get('lignes'):
+                for ligne in formulaire_original['lignes']:
+                    query_ligne = '''
+                        INSERT INTO formulaire_lignes
+                        (formulaire_id, sequence_ligne, description, code_article,
+                         quantite, unite, prix_unitaire, reference_materiau, notes_ligne)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    '''
+                    self.execute_insert(query_ligne, (
+                        nouveau_id,
+                        ligne['sequence_ligne'],
+                        ligne['description'],
+                        ligne.get('code_article'),
+                        ligne['quantite'],
+                        ligne['unite'],
+                        ligne['prix_unitaire'],
+                        ligne.get('reference_materiau'),
+                        ligne.get('notes_ligne')
+                    ))
+            
+            # Enregistrer l'action de duplication
+            self._enregistrer_validation(
+                nouveau_id, 
+                formulaire_original.get('employee_id'), 
+                'CREATION',
+                f"Formulaire dupliqué depuis {formulaire_original.get('numero_document', '')}"
+            )
+            
+            return nouveau_id
+            
+        except Exception as e:
+            logger.error(f"Erreur duplication formulaire: {e}")
+            return None
+    
+    def _generer_numero_document(self, type_formulaire: str) -> str:
+        """Génère un numéro de document automatique"""
+        try:
+            prefixes = {
+                'BON_TRAVAIL': 'BT',
+                'BON_ACHAT': 'BA',
+                'BON_COMMANDE': 'BC',
+                'DEMANDE_PRIX': 'DP',
+                'ESTIMATION': 'EST'
+            }
+            
+            prefix = prefixes.get(type_formulaire, 'DOC')
+            annee = datetime.now().year
+            
+            # Récupérer le dernier numéro pour ce type et cette année
+            query = '''
+                SELECT numero_document FROM formulaires 
+                WHERE type_formulaire = ? AND numero_document LIKE ?
+                ORDER BY id DESC LIMIT 1
+            '''
+            pattern = f"{prefix}-{annee}-%"
+            result = self.execute_query(query, (type_formulaire, pattern))
+            
+            if result:
+                last_num = result[0]['numero_document']
+                sequence = int(last_num.split('-')[-1]) + 1
+            else:
+                sequence = 1
+            
+            return f"{prefix}-{annee}-{sequence:03d}"
+            
+        except Exception as e:
+            logger.error(f"Erreur génération numéro document: {e}")
+            return f"ERR-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    def _enregistrer_validation(self, formulaire_id: int, employee_id: int, type_validation: str, commentaires: str):
+        """Enregistre une validation dans l'historique"""
+        try:
+            query = '''
+                INSERT INTO formulaire_validations
+                (formulaire_id, employee_id, type_validation, commentaires)
+                VALUES (?, ?, ?, ?)
+            '''
+            self.execute_insert(query, (formulaire_id, employee_id, type_validation, commentaires))
+        except Exception as e:
+            logger.error(f"Erreur enregistrement validation: {e}")
+    
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES AUX BONS DE TRAVAIL
+    # =========================================================================
+    
+    def assign_employee_to_bt(self, bt_id: int, employe_id: int, notes: str = "") -> int:
+        """Assigne un employé à un bon de travail"""
+        try:
+            query = '''
+                INSERT INTO bt_assignations (bt_id, employe_id, notes_assignation)
+                VALUES (?, ?, ?)
+            '''
+            assignation_id = self.execute_insert(query, (bt_id, employe_id, notes))
+            
+            # Enregistrer dans l'historique
+            self._enregistrer_validation(bt_id, employe_id, 'ASSIGNATION', f"Employé assigné au BT - {notes}")
+            
+            return assignation_id
+            
+        except Exception as e:
+            logger.error(f"Erreur assignation employé BT: {e}")
+            return None
+    
+    def reserve_work_center_for_bt(self, bt_id: int, work_center_id: int, date_prevue: str, notes: str = "") -> int:
+        """Réserve un poste de travail pour un bon de travail"""
+        try:
+            query = '''
+                INSERT INTO bt_reservations_postes (bt_id, work_center_id, date_prevue, notes_reservation)
+                VALUES (?, ?, ?, ?)
+            '''
+            reservation_id = self.execute_insert(query, (bt_id, work_center_id, date_prevue, notes))
+            
+            # Enregistrer dans l'historique
+            self._enregistrer_validation(bt_id, None, 'RESERVATION_POSTE', f"Poste réservé pour le {date_prevue} - {notes}")
+            
+            return reservation_id
+            
+        except Exception as e:
+            logger.error(f"Erreur réservation poste BT: {e}")
+            return None
+    
+    def liberate_work_center_from_bt(self, reservation_id: int) -> bool:
+        """Libère un poste de travail d'un bon de travail"""
+        try:
+            query = '''
+                UPDATE bt_reservations_postes 
+                SET statut = 'LIBÉRÉ', date_liberation = CURRENT_TIMESTAMP
+                WHERE id = ?
+            '''
+            affected = self.execute_update(query, (reservation_id,))
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur libération poste BT: {e}")
+            return False
+    
+    def get_bt_with_assignments(self, bt_id: int) -> Dict:
+        """Récupère un BT avec toutes ses assignations et réservations"""
+        try:
+            query = '''
+                SELECT * FROM view_bons_travail_complets
+                WHERE id = ?
+            '''
+            result = self.execute_query(query, (bt_id,))
+            return dict(result[0]) if result else {}
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération BT avec assignations: {e}")
+            return {}
+    
+    def get_work_center_reservations(self, work_center_id: int, date_debut: str = None, date_fin: str = None) -> List[Dict]:
+        """Récupère les réservations d'un poste de travail"""
+        try:
+            query = '''
+                SELECT btr.*, f.numero_document, f.statut as bt_statut, p.nom_projet
+                FROM bt_reservations_postes btr
+                LEFT JOIN formulaires f ON btr.bt_id = f.id
+                LEFT JOIN projects p ON f.project_id = p.id
+                WHERE btr.work_center_id = ? AND btr.statut = 'RÉSERVÉ'
+            '''
+            params = [work_center_id]
+            
+            if date_debut:
+                query += " AND btr.date_prevue >= ?"
+                params.append(date_debut)
+            
+            if date_fin:
+                query += " AND btr.date_prevue <= ?"
+                params.append(date_fin)
+            
+            query += " ORDER BY btr.date_prevue"
+            
+            rows = self.execute_query(query, tuple(params))
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération réservations poste: {e}")
+            return []
+    
+    def get_employee_bt_assignments(self, employe_id: int) -> List[Dict]:
+        """Récupère les assignations BT d'un employé"""
+        try:
+            query = '''
+                SELECT bta.*, f.numero_document, f.statut as bt_statut, f.priorite, p.nom_projet
+                FROM bt_assignations bta
+                LEFT JOIN formulaires f ON bta.bt_id = f.id
+                LEFT JOIN projects p ON f.project_id = p.id
+                WHERE bta.employe_id = ? AND bta.statut = 'ASSIGNÉ'
+                ORDER BY f.priorite DESC, bta.date_assignation DESC
+            '''
+            rows = self.execute_query(query, (employe_id,))
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération assignations employé: {e}")
+            return []
+    
+    # =========================================================================
+    # MÉTHODES SPÉCIFIQUES AUX BONS D'ACHATS
+    # =========================================================================
+    
+    def get_companies_by_type(self, company_type: str = None) -> List[Dict]:
+        """Récupère les entreprises par type (CLIENT, FOURNISSEUR, etc.)"""
+        try:
+            if company_type:
+                # Recherche par secteur, type_company ou notes
+                query = """
+                    SELECT * FROM companies 
+                    WHERE UPPER(secteur) LIKE UPPER(?) 
+                       OR UPPER(type_company) LIKE UPPER(?)
+                       OR UPPER(notes) LIKE UPPER(?)
+                    ORDER BY nom
+                """
+                pattern = f"%{company_type}%"
+                rows = self.execute_query(query, (pattern, pattern, pattern))
+            else:
+                rows = self.execute_query("SELECT * FROM companies ORDER BY nom")
+            
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération companies: {e}")
+            return []
+    
+    def get_fournisseurs_with_stats(self) -> List[Dict]:
+        """Récupère les fournisseurs avec leurs statistiques"""
+        try:
+            query = "SELECT * FROM view_fournisseurs_stats ORDER BY nombre_commandes DESC, nom"
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération fournisseurs: {e}")
+            return []
+    
+    def add_fournisseur(self, company_id: int, fournisseur_data: Dict) -> int:
+        """Ajoute un fournisseur basé sur une entreprise existante"""
+        try:
+            query = '''
+                INSERT INTO fournisseurs 
+                (company_id, code_fournisseur, categorie_produits, delai_livraison_moyen,
+                 conditions_paiement, evaluation_qualite, contact_commercial, contact_technique,
+                 certifications, notes_evaluation)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            fournisseur_id = self.execute_insert(query, (
+                company_id,
+                fournisseur_data.get('code_fournisseur'),
+                fournisseur_data.get('categorie_produits'),
+                fournisseur_data.get('delai_livraison_moyen', 14),
+                fournisseur_data.get('conditions_paiement', '30 jours net'),
+                fournisseur_data.get('evaluation_qualite', 5),
+                fournisseur_data.get('contact_commercial'),
+                fournisseur_data.get('contact_technique'),
+                fournisseur_data.get('certifications'),
+                fournisseur_data.get('notes_evaluation')
+            ))
+            
+            # Mettre à jour le type de l'entreprise
+            self.execute_update(
+                "UPDATE companies SET type_company = 'FOURNISSEUR' WHERE id = ?",
+                (company_id,)
+            )
+            
+            return fournisseur_id
+            
+        except Exception as e:
+            logger.error(f"Erreur ajout fournisseur: {e}")
+            return None
+    
+    def update_inventory_status_all(self):
+        """Met à jour automatiquement le statut de tous les articles d'inventaire"""
+        try:
+            query = """
+                UPDATE inventory_items 
+                SET statut = CASE
+                    WHEN quantite_metric <= 0.001 THEN 'ÉPUISÉ'
+                    WHEN quantite_metric <= limite_minimale_metric THEN 'CRITIQUE'
+                    WHEN quantite_metric <= (limite_minimale_metric * 1.5) THEN 'FAIBLE'
+                    ELSE 'DISPONIBLE'
+                END,
+                updated_at = CURRENT_TIMESTAMP
+                WHERE limite_minimale_metric > 0
+            """
+            
+            affected = self.execute_update(query)
+            logger.info(f"Statuts inventaire mis à jour: {affected} articles")
+            return affected
+            
+        except Exception as e:
+            logger.error(f"Erreur mise à jour statuts inventaire: {e}")
+            return 0
+    
+    def get_stocks_critiques(self) -> List[Dict]:
+        """Retourne les articles avec stock critique"""
+        try:
+            query = "SELECT * FROM view_stocks_critiques WHERE statut_calcule IN ('ÉPUISÉ', 'CRITIQUE', 'FAIBLE')"
+            rows = self.execute_query(query)
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Erreur récupération stocks critiques: {e}")
+            return []
+    
+    def create_approvisionnement(self, formulaire_id: int, fournisseur_id: int, data: Dict) -> int:
+        """Crée un enregistrement d'approvisionnement"""
+        try:
+            query = '''
+                INSERT INTO approvisionnements
+                (formulaire_id, fournisseur_id, statut_livraison, date_commande,
+                 date_livraison_prevue, quantite_commandee, notes_livraison)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            appro_id = self.execute_insert(query, (
+                formulaire_id,
+                fournisseur_id,
+                data.get('statut_livraison', 'EN_ATTENTE'),
+                data.get('date_commande'),
+                data.get('date_livraison_prevue'),
+                data.get('quantite_commandee', 0),
+                data.get('notes_livraison')
+            ))
+            
+            return appro_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création approvisionnement: {e}")
+            return None
+    
+    def update_approvisionnement_status(self, appro_id: int, nouveau_statut: str, notes: str = ""):
+        """Met à jour le statut d'un approvisionnement"""
+        try:
+            query = '''
+                UPDATE approvisionnements 
+                SET statut_livraison = ?, notes_livraison = ?, 
+                    date_livraison_reelle = CASE WHEN ? = 'LIVRÉ' THEN CURRENT_DATE ELSE date_livraison_reelle END
+                WHERE id = ?
+            '''
+            
+            affected = self.execute_update(query, (nouveau_statut, notes, nouveau_statut, appro_id))
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur mise à jour approvisionnement: {e}")
+            return False
+    
+    # =========================================================================
+    # MÉTHODES CRM PIPELINE
+    # =========================================================================
+    
+    def create_opportunity(self, data: Dict) -> int:
+        """Crée une nouvelle opportunité de vente"""
+        try:
+            query = '''
+                INSERT INTO opportunities
+                (nom, company_id, contact_id, montant_estime, devise, statut,
+                 probabilite, date_cloture_prevue, source, campagne, notes,
+                 assigned_to, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            opp_id = self.execute_insert(query, (
+                data.get('nom'),
+                data.get('company_id'),
+                data.get('contact_id'),
+                data.get('montant_estime', 0.0),
+                data.get('devise', 'CAD'),
+                data.get('statut', 'Prospection'),
+                data.get('probabilite', 50),
+                data.get('date_cloture_prevue'),
+                data.get('source'),
+                data.get('campagne'),
+                data.get('notes'),
+                data.get('assigned_to'),
+                data.get('created_by')
+            ))
+            
+            return opp_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création opportunité: {e}")
+            return None
+    
+    def update_opportunity(self, opp_id: int, data: Dict) -> bool:
+        """Met à jour une opportunité existante"""
+        try:
+            fields = []
+            values = []
+            
+            for field in ['nom', 'company_id', 'contact_id', 'montant_estime', 
+                         'statut', 'probabilite', 'date_cloture_prevue', 'notes']:
+                if field in data:
+                    fields.append(f"{field} = ?")
+                    values.append(data[field])
+            
+            if not fields:
+                return True
+                
+            values.append(opp_id)
+            query = f"UPDATE opportunities SET {', '.join(fields)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            
+            affected = self.execute_update(query, values)
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur mise à jour opportunité: {e}")
+            return False
+    
+    def get_opportunities(self, filters: Dict = None) -> List[Dict]:
+        """Récupère les opportunités avec filtres optionnels"""
+        try:
+            query = '''
+                SELECT o.*, c.nom as company_name, 
+                       ct.prenom || ' ' || ct.nom_famille as contact_name,
+                       e.prenom || ' ' || e.nom as assigned_to_name
+                FROM opportunities o
+                LEFT JOIN companies c ON o.company_id = c.id
+                LEFT JOIN contacts ct ON o.contact_id = ct.id
+                LEFT JOIN employees e ON o.assigned_to = e.id
+                WHERE 1=1
+            '''
+            params = []
+            
+            if filters:
+                if filters.get('statut'):
+                    query += " AND o.statut = ?"
+                    params.append(filters['statut'])
+                if filters.get('assigned_to'):
+                    query += " AND o.assigned_to = ?"
+                    params.append(filters['assigned_to'])
+                if filters.get('company_id'):
+                    query += " AND o.company_id = ?"
+                    params.append(filters['company_id'])
+            
+            query += " ORDER BY o.created_at DESC"
+            
+            return self.execute_query(query, params)
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération opportunités: {e}")
+            return []
+    
+    def create_crm_activity(self, data: Dict) -> int:
+        """Crée une nouvelle activité CRM"""
+        try:
+            query = '''
+                INSERT INTO crm_activities
+                (opportunity_id, contact_id, company_id, type_activite, sujet,
+                 description, date_activite, duree_minutes, statut, priorite,
+                 rappel_minutes, lieu, assigned_to, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            activity_id = self.execute_insert(query, (
+                data.get('opportunity_id'),
+                data.get('contact_id'),
+                data.get('company_id'),
+                data.get('type_activite'),
+                data.get('sujet'),
+                data.get('description'),
+                data.get('date_activite'),
+                data.get('duree_minutes'),
+                data.get('statut', 'Planifié'),
+                data.get('priorite', 'Normale'),
+                data.get('rappel_minutes', 15),
+                data.get('lieu'),
+                data.get('assigned_to'),
+                data.get('created_by')
+            ))
+            
+            return activity_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création activité CRM: {e}")
+            return None
+    
+    def get_crm_activities(self, filters: Dict = None) -> List[Dict]:
+        """Récupère les activités CRM avec filtres optionnels"""
+        try:
+            query = '''
+                SELECT a.*, o.nom as opportunity_name,
+                       c.nom as company_name,
+                       ct.prenom || ' ' || ct.nom_famille as contact_name,
+                       e.prenom || ' ' || e.nom as assigned_to_name
+                FROM crm_activities a
+                LEFT JOIN opportunities o ON a.opportunity_id = o.id
+                LEFT JOIN companies c ON a.company_id = c.id
+                LEFT JOIN contacts ct ON a.contact_id = ct.id
+                LEFT JOIN employees e ON a.assigned_to = e.id
+                WHERE 1=1
+            '''
+            params = []
+            
+            if filters:
+                if filters.get('date_debut') and filters.get('date_fin'):
+                    query += " AND DATE(a.date_activite) BETWEEN ? AND ?"
+                    params.extend([filters['date_debut'], filters['date_fin']])
+                if filters.get('statut'):
+                    query += " AND a.statut = ?"
+                    params.append(filters['statut'])
+                if filters.get('assigned_to'):
+                    query += " AND a.assigned_to = ?"
+                    params.append(filters['assigned_to'])
+            
+            query += " ORDER BY a.date_activite ASC"
+            
+            return self.execute_query(query, params)
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération activités CRM: {e}")
+            return []
+    
+    def get_opportunity_pipeline_stats(self) -> Dict:
+        """Récupère les statistiques du pipeline de vente"""
+        try:
+            stats = {}
+            
+            # Nombre d'opportunités par statut
+            query = '''
+                SELECT statut, COUNT(*) as count, SUM(montant_estime) as total
+                FROM opportunities
+                GROUP BY statut
+            '''
+            results = self.execute_query(query)
+            stats['par_statut'] = {r['statut']: {'count': r['count'], 'total': r['total'] or 0} for r in results}
+            
+            # Valeur totale du pipeline
+            query = '''
+                SELECT SUM(montant_estime) as total_pipeline,
+                       SUM(CASE WHEN statut IN ('Gagné') THEN montant_estime ELSE 0 END) as total_gagne,
+                       SUM(CASE WHEN statut NOT IN ('Gagné', 'Perdu') 
+                           THEN montant_estime * probabilite / 100.0 ELSE 0 END) as total_pondere
+                FROM opportunities
+            '''
+            result = self.execute_query(query)[0]
+            stats['valeurs'] = {
+                'pipeline': result['total_pipeline'] or 0,
+                'gagne': result['total_gagne'] or 0,
+                'pondere': result['total_pondere'] or 0
+            }
+            
+            # Taux de conversion
+            query = '''
+                SELECT COUNT(CASE WHEN statut = 'Gagné' THEN 1 END) * 100.0 / 
+                       NULLIF(COUNT(*), 0) as taux_conversion
+                FROM opportunities
+                WHERE statut IN ('Gagné', 'Perdu')
+            '''
+            result = self.execute_query(query)[0]
+            stats['taux_conversion'] = result['taux_conversion'] or 0
+            
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Erreur calcul stats pipeline: {e}")
+            return {}
+    
+    def create_project(self, data: Dict) -> Optional[int]:
+        """Crée un nouveau projet dans la base de données"""
+        try:
+            # Vérifier si un ID spécifique est fourni
+            if 'id' in data and data['id']:
+                query = '''
+                    INSERT INTO projects
+                    (id, nom_projet, client_company_id, client_contact_id, po_client,
+                     statut, priorite, tache, date_soumis, date_prevu,
+                     bd_ft_estime, prix_estime, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                
+                self.execute_insert(query, (
+                    data.get('id'),
+                    data.get('nom_projet'),
+                    data.get('client_company_id'),
+                    data.get('client_contact_id'),
+                    data.get('po_client'),
+                    data.get('statut', 'À FAIRE'),
+                    data.get('priorite', 'MOYEN'),
+                    data.get('tache'),
+                    data.get('date_soumis'),
+                    data.get('date_prevu'),
+                    data.get('bd_ft_estime', 0.0),
+                    data.get('prix_estime', 0.0),
+                    data.get('description')
+                ))
+                project_id = data.get('id')  # Retourner l'ID fourni
+            else:
+                # Mode automatique (pour compatibilité)
+                query = '''
+                    INSERT INTO projects
+                    (nom_projet, client_company_id, client_contact_id, po_client,
+                     statut, priorite, tache, date_soumis, date_prevu,
+                     bd_ft_estime, prix_estime, description)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                '''
+                
+                project_id = self.execute_insert(query, (
+                    data.get('nom_projet'),
+                    data.get('client_company_id'),
+                    data.get('client_contact_id'),
+                    data.get('po_client'),
+                    data.get('statut', 'À FAIRE'),
+                    data.get('priorite', 'MOYEN'),
+                    data.get('tache'),
+                    data.get('date_soumis'),
+                    data.get('date_prevu'),
+                    data.get('bd_ft_estime', 0.0),
+                    data.get('prix_estime', 0.0),
+                    data.get('description')
+                ))
+            
+            logger.info(f"Projet créé avec l'ID: {project_id}")
+            return project_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création projet: {e}")
+            return None
+    
+    def create_interaction_from_opportunity(self, opportunity_id: int, interaction_data: Dict) -> Optional[int]:
+        """Crée une interaction liée à une opportunité"""
+        try:
+            # Récupérer les infos de l'opportunité
+            opp = self.execute_query(
+                "SELECT contact_id, company_id FROM opportunities WHERE id = ?",
+                (opportunity_id,)
+            )
+            if not opp:
+                return None
+            
+            opp = opp[0]
+            
+            query = '''
+                INSERT INTO interactions
+                (contact_id, company_id, opportunity_id, type_interaction,
+                 date_interaction, resume, details, resultat, suivi_prevu)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            interaction_id = self.execute_insert(query, (
+                opp['contact_id'],
+                opp['company_id'],
+                opportunity_id,
+                interaction_data.get('type_interaction'),
+                interaction_data.get('date_interaction'),
+                interaction_data.get('resume'),
+                interaction_data.get('details'),
+                interaction_data.get('resultat'),
+                interaction_data.get('suivi_prevu')
+            ))
+            
+            return interaction_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création interaction depuis opportunité: {e}")
+            return None
+
+    # =========================================================================
+    # MÉTHODES INVENTAIRE ET MOUVEMENTS DE STOCK
+    # =========================================================================
+    
+    def enregistrer_mouvement_stock(self, data: Dict) -> int:
+        """Enregistre un mouvement de stock avec mise à jour automatique du stock produit"""
+        try:
+            # Récupérer le stock actuel
+            produit = self.execute_query("SELECT stock_disponible FROM produits WHERE id = ?", (data['produit_id'],))
+            if not produit:
+                logger.error(f"Produit {data['produit_id']} non trouvé")
+                return None
+            
+            stock_avant = produit[0]['stock_disponible']
+            
+            # Calculer le nouveau stock selon le type de mouvement
+            if data['type_mouvement'] in ['ENTREE', 'LIBERATION']:
+                stock_apres = stock_avant + data['quantite']
+            elif data['type_mouvement'] in ['SORTIE', 'RESERVATION']:
+                stock_apres = stock_avant - data['quantite']
+            elif data['type_mouvement'] == 'AJUSTEMENT':
+                stock_apres = data['quantite']  # Pour ajustement, la quantité est la nouvelle valeur
+                data['quantite'] = stock_apres - stock_avant  # Calculer la différence
+            else:  # INVENTAIRE
+                stock_apres = data['quantite']
+                data['quantite'] = stock_apres - stock_avant
+            
+            # Enregistrer le mouvement
+            query = '''
+                INSERT INTO mouvements_stock
+                (produit_id, type_mouvement, quantite, quantite_avant, quantite_apres,
+                 reference_document, reference_type, motif, employee_id, cout_unitaire, cout_total)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            mouvement_id = self.execute_insert(query, (
+                data['produit_id'],
+                data['type_mouvement'],
+                data['quantite'],
+                stock_avant,
+                stock_apres,
+                data.get('reference_document'),
+                data.get('reference_type'),
+                data.get('motif'),
+                data.get('employee_id'),
+                data.get('cout_unitaire'),
+                data.get('cout_total')
+            ))
+            
+            # Mettre à jour le stock du produit
+            self.execute_update(
+                "UPDATE produits SET stock_disponible = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (stock_apres, data['produit_id'])
+            )
+            
+            return mouvement_id
+            
+        except Exception as e:
+            logger.error(f"Erreur enregistrement mouvement stock: {e}")
+            return None
+    
+    def get_mouvements_stock(self, produit_id: int = None, limit: int = 100) -> List[Dict]:
+        """Récupère l'historique des mouvements de stock"""
+        try:
+            if produit_id:
+                query = '''
+                    SELECT m.*, p.code_produit, p.nom as produit_nom, 
+                           e.prenom || ' ' || e.nom as employee_name
+                    FROM mouvements_stock m
+                    LEFT JOIN produits p ON m.produit_id = p.id
+                    LEFT JOIN employees e ON m.employee_id = e.id
+                    WHERE m.produit_id = ?
+                    ORDER BY m.created_at DESC
+                    LIMIT ?
+                '''
+                return self.execute_query(query, (produit_id, limit))
+            else:
+                query = '''
+                    SELECT m.*, p.code_produit, p.nom as produit_nom,
+                           e.prenom || ' ' || e.nom as employee_name
+                    FROM mouvements_stock m
+                    LEFT JOIN produits p ON m.produit_id = p.id
+                    LEFT JOIN employees e ON m.employee_id = e.id
+                    ORDER BY m.created_at DESC
+                    LIMIT ?
+                '''
+                return self.execute_query(query, (limit,))
+                
+        except Exception as e:
+            logger.error(f"Erreur récupération mouvements: {e}")
+            return []
+    
+    def creer_inventaire_physique(self, data: Dict) -> int:
+        """Crée un nouvel inventaire physique"""
+        try:
+            # Générer un code unique
+            code = f"INV-{datetime.now().strftime('%Y%m%d')}-{datetime.now().strftime('%H%M%S')}"
+            
+            query = '''
+                INSERT INTO inventaires_physiques
+                (code_inventaire, date_inventaire, type_inventaire, created_by, notes)
+                VALUES (?, ?, ?, ?, ?)
+            '''
+            
+            inventaire_id = self.execute_insert(query, (
+                code,
+                data.get('date_inventaire', datetime.now().date()),
+                data.get('type_inventaire', 'COMPLET'),
+                data.get('created_by'),
+                data.get('notes')
+            ))
+            
+            # Si inventaire complet, créer les lignes pour tous les produits actifs
+            if data.get('type_inventaire', 'COMPLET') == 'COMPLET':
+                produits = self.execute_query("SELECT id, stock_disponible FROM produits WHERE actif = 1")
+                for produit in produits:
+                    self.execute_insert('''
+                        INSERT INTO inventaire_lignes
+                        (inventaire_id, produit_id, quantite_theorique)
+                        VALUES (?, ?, ?)
+                    ''', (inventaire_id, produit['id'], produit['stock_disponible']))
+            
+            return inventaire_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création inventaire: {e}")
+            return None
+    
+    def saisir_comptage_inventaire(self, ligne_id: int, quantite_physique: float, employee_id: int) -> bool:
+        """Saisit le comptage physique d'une ligne d'inventaire"""
+        try:
+            # Récupérer les infos de la ligne
+            ligne = self.execute_query('''
+                SELECT il.*, p.prix_unitaire
+                FROM inventaire_lignes il
+                JOIN produits p ON il.produit_id = p.id
+                WHERE il.id = ?
+            ''', (ligne_id,))[0]
+            
+            ecart = quantite_physique - ligne['quantite_theorique']
+            ecart_valeur = ecart * ligne['prix_unitaire']
+            
+            # Mettre à jour la ligne
+            self.execute_update('''
+                UPDATE inventaire_lignes
+                SET quantite_physique = ?, ecart = ?, ecart_valeur = ?,
+                    statut_ligne = 'COMPTE', compte_par = ?, compte_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (quantite_physique, ecart, ecart_valeur, employee_id, ligne_id))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur saisie comptage: {e}")
+            return False
+    
+    def valider_inventaire(self, inventaire_id: int, validated_by: int) -> bool:
+        """Valide un inventaire et applique les ajustements de stock"""
+        try:
+            # Vérifier que toutes les lignes sont comptées
+            non_comptees = self.execute_query('''
+                SELECT COUNT(*) as count
+                FROM inventaire_lignes
+                WHERE inventaire_id = ? AND statut_ligne = 'A_COMPTER'
+            ''', (inventaire_id,))[0]['count']
+            
+            if non_comptees > 0:
+                logger.error(f"Inventaire {inventaire_id} a {non_comptees} lignes non comptées")
+                return False
+            
+            # Récupérer toutes les lignes avec écart
+            lignes_ecart = self.execute_query('''
+                SELECT il.*, p.nom as produit_nom
+                FROM inventaire_lignes il
+                JOIN produits p ON il.produit_id = p.id
+                WHERE il.inventaire_id = ? AND il.ecart != 0
+            ''', (inventaire_id,))
+            
+            # Appliquer les ajustements pour chaque écart
+            for ligne in lignes_ecart:
+                self.enregistrer_mouvement_stock({
+                    'produit_id': ligne['produit_id'],
+                    'type_mouvement': 'INVENTAIRE',
+                    'quantite': ligne['quantite_physique'],
+                    'reference_document': f"INV-{inventaire_id}",
+                    'reference_type': 'INVENTAIRE',
+                    'motif': f"Ajustement inventaire - Écart: {ligne['ecart']}",
+                    'employee_id': validated_by
+                })
+                
+                # Marquer la ligne comme validée
+                self.execute_update(
+                    "UPDATE inventaire_lignes SET statut_ligne = 'VALIDE' WHERE id = ?",
+                    (ligne['id'],)
+                )
+            
+            # Valider l'inventaire
+            self.execute_update('''
+                UPDATE inventaires_physiques
+                SET statut = 'VALIDE', validated_by = ?, validated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            ''', (validated_by, inventaire_id))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur validation inventaire: {e}")
+            return False
+    
+    def reserver_stock(self, data: Dict) -> int:
+        """Crée une réservation de stock"""
+        try:
+            # Vérifier la disponibilité
+            produit = self.execute_query(
+                "SELECT stock_disponible FROM produits WHERE id = ?",
+                (data['produit_id'],)
+            )[0]
+            
+            if produit['stock_disponible'] < data['quantite_reservee']:
+                logger.error(f"Stock insuffisant pour réservation: {produit['stock_disponible']} < {data['quantite_reservee']}")
+                return None
+            
+            # Créer la réservation
+            query = '''
+                INSERT INTO reservations_stock
+                (produit_id, quantite_reservee, reference_document, reference_type,
+                 date_expiration, created_by, notes)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            reservation_id = self.execute_insert(query, (
+                data['produit_id'],
+                data['quantite_reservee'],
+                data['reference_document'],
+                data['reference_type'],
+                data.get('date_expiration'),
+                data.get('created_by'),
+                data.get('notes')
+            ))
+            
+            # Enregistrer le mouvement de réservation
+            self.enregistrer_mouvement_stock({
+                'produit_id': data['produit_id'],
+                'type_mouvement': 'RESERVATION',
+                'quantite': data['quantite_reservee'],
+                'reference_document': data['reference_document'],
+                'reference_type': data['reference_type'],
+                'motif': f"Réservation stock - {data.get('notes', '')}",
+                'employee_id': data.get('created_by')
+            })
+            
+            return reservation_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création réservation: {e}")
+            return None
+    
+    def liberer_reservation(self, reservation_id: int, employee_id: int = None) -> bool:
+        """Libère une réservation de stock"""
+        try:
+            # Récupérer la réservation
+            reservation = self.execute_query(
+                "SELECT * FROM reservations_stock WHERE id = ? AND statut = 'ACTIVE'",
+                (reservation_id,)
+            )
+            
+            if not reservation:
+                logger.error(f"Réservation {reservation_id} non trouvée ou inactive")
+                return False
+            
+            reservation = reservation[0]
+            
+            # Libérer la réservation
+            self.execute_update(
+                "UPDATE reservations_stock SET statut = 'LIBEREE' WHERE id = ?",
+                (reservation_id,)
+            )
+            
+            # Enregistrer le mouvement de libération
+            self.enregistrer_mouvement_stock({
+                'produit_id': reservation['produit_id'],
+                'type_mouvement': 'LIBERATION',
+                'quantite': reservation['quantite_reservee'],
+                'reference_document': reservation['reference_document'],
+                'reference_type': reservation['reference_type'],
+                'motif': f"Libération réservation #{reservation_id}",
+                'employee_id': employee_id
+            })
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur libération réservation: {e}")
+            return False
+    
+    def get_stock_analysis(self) -> Dict:
+        """Analyse complète de l'état des stocks"""
+        try:
+            analysis = {}
+            
+            # Valeur totale du stock
+            value_result = self.execute_query('''
+                SELECT SUM(stock_disponible * prix_unitaire) as valeur_totale
+                FROM produits WHERE actif = 1
+            ''')
+            analysis['valeur_totale_stock'] = value_result[0]['valeur_totale'] or 0
+            
+            # Produits en rupture
+            rupture = self.execute_query('''
+                SELECT COUNT(*) as count FROM produits 
+                WHERE actif = 1 AND stock_disponible <= 0
+            ''')
+            analysis['produits_rupture'] = rupture[0]['count']
+            
+            # Produits sous le minimum
+            sous_min = self.execute_query('''
+                SELECT COUNT(*) as count FROM produits 
+                WHERE actif = 1 AND stock_disponible > 0 AND stock_disponible <= stock_minimum
+            ''')
+            analysis['produits_sous_minimum'] = sous_min[0]['count']
+            
+            # Top 10 mouvements récents
+            analysis['mouvements_recents'] = self.get_mouvements_stock(limit=10)
+            
+            # Réservations actives
+            reservations = self.execute_query('''
+                SELECT COUNT(*) as count, SUM(quantite_reservee) as total_reserve
+                FROM reservations_stock WHERE statut = 'ACTIVE'
+            ''')
+            analysis['reservations_actives'] = {
+                'count': reservations[0]['count'],
+                'quantite_totale': reservations[0]['total_reserve'] or 0
+            }
+            
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse stock: {e}")
+            return {}
+
+    # =========================================================================
+    # MÉTHODES D'ANALYSE ET REPORTING
+    # =========================================================================
+    
+    # =========================================================================
+    # MÉTHODES D'INTERCONNEXION CRM (INTERACTIONS - PIPELINE - CALENDRIER)
+    # =========================================================================
+    
+    def create_interaction_from_opportunity(self, opportunity_id: int, interaction_data: Dict) -> Optional[int]:
+        """Crée une interaction liée à une opportunité du pipeline"""
+        try:
+            # Récupérer l'opportunité
+            opp = self.execute_query("SELECT * FROM opportunities WHERE id = ?", (opportunity_id,))
+            if not opp:
+                return None
+            opp = opp[0]
+            
+            # Créer l'interaction avec le lien vers l'opportunité
+            query = '''
+                INSERT INTO interactions 
+                (type_interaction, contact_id, company_id, date_interaction, resume, 
+                 details, resultat, suivi_prevu, opportunity_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            interaction_id = self.execute_insert(query, (
+                interaction_data.get('type_interaction'),
+                interaction_data.get('contact_id', opp['contact_id']),
+                interaction_data.get('company_id', opp['company_id']),
+                interaction_data.get('date_interaction'),
+                interaction_data.get('resume'),
+                interaction_data.get('details'),
+                interaction_data.get('resultat'),
+                interaction_data.get('suivi_prevu'),
+                opportunity_id
+            ))
+            
+            return interaction_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création interaction depuis opportunité: {e}")
+            return None
+    
+    def create_activity_from_interaction(self, interaction_id: int, activity_data: Dict) -> Optional[int]:
+        """Crée une activité calendrier à partir d'une interaction"""
+        try:
+            # Récupérer l'interaction
+            inter = self.execute_query("SELECT * FROM interactions WHERE id = ?", (interaction_id,))
+            if not inter:
+                return None
+            inter = inter[0]
+            
+            # Créer l'activité
+            query = '''
+                INSERT INTO crm_activities
+                (sujet, type_activite, contact_id, company_id, date_activite, duree_minutes,
+                 description, statut, priorite, assigned_to, interaction_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            '''
+            
+            # Calculer la durée en minutes si date_fin est fournie
+            duree_minutes = 60  # Par défaut 1 heure
+            if activity_data.get('date_fin') and activity_data.get('date_debut'):
+                try:
+                    debut = datetime.fromisoformat(activity_data['date_debut'])
+                    fin = datetime.fromisoformat(activity_data['date_fin'])
+                    duree_minutes = int((fin - debut).total_seconds() / 60)
+                except:
+                    pass
+            
+            activity_id = self.execute_insert(query, (
+                activity_data.get('titre', f"Suivi {inter['resume'][:50]}"),
+                activity_data.get('type_activite', 'Suivi'),
+                inter['contact_id'],
+                inter['company_id'],
+                activity_data.get('date_debut', inter['suivi_prevu']),
+                duree_minutes,
+                activity_data.get('description', f"Suivi de l'interaction #{interaction_id}: {inter['resume']}"),
+                activity_data.get('statut', 'Planifié'),
+                activity_data.get('priorite', 'Normale'),
+                activity_data.get('assigned_to'),
+                interaction_id
+            ))
+            
+            return activity_id
+            
+        except Exception as e:
+            logger.error(f"Erreur création activité depuis interaction: {e}")
+            return None
+    
+    def link_opportunity_to_activity(self, opportunity_id: int, activity_id: int) -> bool:
+        """Lie une opportunité à une activité calendrier"""
+        try:
+            # Vérifier si la colonne opportunity_id existe dans crm_activities
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(crm_activities)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'opportunity_id' not in columns:
+                # Ajouter la colonne si elle n'existe pas
+                self.execute_update("ALTER TABLE crm_activities ADD COLUMN opportunity_id INTEGER")
+            
+            # Mettre à jour l'activité
+            affected = self.execute_update(
+                "UPDATE crm_activities SET opportunity_id = ? WHERE id = ?",
+                (opportunity_id, activity_id)
+            )
+            
+            return affected > 0
+            
+        except Exception as e:
+            logger.error(f"Erreur liaison opportunité-activité: {e}")
+            return False
+    
+    def get_interactions_by_opportunity(self, opportunity_id: int) -> List[Dict]:
+        """Récupère toutes les interactions liées à une opportunité"""
+        try:
+            # Vérifier si la colonne opportunity_id existe
+            cursor = self.conn.cursor()
+            cursor.execute("PRAGMA table_info(interactions)")
+            columns = [col[1] for col in cursor.fetchall()]
+            
+            if 'opportunity_id' not in columns:
+                # Ajouter la colonne si elle n'existe pas
+                self.execute_update("ALTER TABLE interactions ADD COLUMN opportunity_id INTEGER")
+            
+            query = '''
+                SELECT i.*, c.prenom || ' ' || c.nom_famille as contact_name,
+                       co.nom as company_name
+                FROM interactions i
+                LEFT JOIN contacts c ON i.contact_id = c.id
+                LEFT JOIN companies co ON i.company_id = co.id
+                WHERE i.opportunity_id = ?
+                ORDER BY i.date_interaction DESC
+            '''
+            
+            return self.execute_query(query, (opportunity_id,))
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération interactions par opportunité: {e}")
+            return []
+    
+    def get_activities_by_opportunity(self, opportunity_id: int) -> List[Dict]:
+        """Récupère toutes les activités liées à une opportunité"""
+        try:
+            query = '''
+                SELECT a.*, c.prenom || ' ' || c.nom_famille as contact_name,
+                       co.nom as company_name, e.prenom || ' ' || e.nom as assigned_to_name
+                FROM crm_activities a
+                LEFT JOIN contacts c ON a.contact_id = c.id
+                LEFT JOIN companies co ON a.company_id = co.id
+                LEFT JOIN employees e ON a.assigned_to = e.id
+                WHERE a.opportunity_id = ?
+                ORDER BY a.date_debut DESC
+            '''
+            
+            return self.execute_query(query, (opportunity_id,))
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération activités par opportunité: {e}")
+            return []
+    
+    def get_crm_unified_view(self, filters: Dict = None) -> Dict[str, Any]:
+        """Vue unifiée des données CRM (interactions, opportunités, activités)"""
+        try:
+            result = {
+                'interactions_recentes': [],
+                'opportunites_actives': [],
+                'activites_a_venir': [],
+                'statistiques': {}
+            }
+            
+            # Interactions récentes
+            query_inter = '''
+                SELECT i.*, c.prenom || ' ' || c.nom_famille as contact_name,
+                       co.nom as company_name, o.nom as opportunity_name
+                FROM interactions i
+                LEFT JOIN contacts c ON i.contact_id = c.id
+                LEFT JOIN companies co ON i.company_id = co.id
+                LEFT JOIN opportunities o ON i.opportunity_id = o.id
+                ORDER BY i.date_interaction DESC
+                LIMIT 10
+            '''
+            result['interactions_recentes'] = self.execute_query(query_inter)
+            
+            # Opportunités actives
+            query_opp = '''
+                SELECT o.*, c.nom as company_name,
+                       COUNT(DISTINCT i.id) as nb_interactions,
+                       COUNT(DISTINCT a.id) as nb_activites
+                FROM opportunities o
+                LEFT JOIN companies c ON o.company_id = c.id
+                LEFT JOIN interactions i ON i.opportunity_id = o.id
+                LEFT JOIN crm_activities a ON a.opportunity_id = o.id
+                WHERE o.statut NOT IN ('Gagné', 'Perdu')
+                GROUP BY o.id
+                ORDER BY o.montant_estime DESC
+                LIMIT 10
+            '''
+            result['opportunites_actives'] = self.execute_query(query_opp)
+            
+            # Activités à venir
+            query_act = '''
+                SELECT a.*, c.prenom || ' ' || c.nom_famille as contact_name,
+                       co.nom as company_name, o.nom as opportunity_name
+                FROM crm_activities a
+                LEFT JOIN contacts c ON a.contact_id = c.id
+                LEFT JOIN companies co ON a.company_id = co.id
+                LEFT JOIN opportunities o ON a.opportunity_id = o.id
+                WHERE a.date_activite >= date('now')
+                  AND a.statut = 'Planifié'
+                ORDER BY a.date_activite ASC
+                LIMIT 10
+            '''
+            result['activites_a_venir'] = self.execute_query(query_act)
+            
+            # Statistiques
+            stats_query = '''
+                SELECT 
+                    (SELECT COUNT(*) FROM interactions WHERE date_interaction >= date('now', '-30 days')) as interactions_30j,
+                    (SELECT COUNT(*) FROM opportunities WHERE statut NOT IN ('Gagné', 'Perdu')) as opportunites_actives,
+                    (SELECT SUM(montant_estime) FROM opportunities WHERE statut NOT IN ('Gagné', 'Perdu')) as pipeline_value,
+                    (SELECT COUNT(*) FROM crm_activities WHERE date_activite >= date('now') AND statut = 'Planifié') as activites_planifiees
+            '''
+            stats = self.execute_query(stats_query)
+            if stats:
+                result['statistiques'] = stats[0]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Erreur vue unifiée CRM: {e}")
+            return {'interactions_recentes': [], 'opportunites_actives': [], 'activites_a_venir': [], 'statistiques': {}}
+    
+    def get_unified_timeline(self, filters: Dict = None) -> List[Dict[str, Any]]:
+        """Récupère la timeline unifiée avec tous les événements CRM"""
+        try:
+            # Paramètres de filtre
+            contact_filter = ""
+            company_filter = ""
+            params = []
+            
+            if filters:
+                if filters.get('contact_id'):
+                    contact_filter = " AND i.contact_id = ?"
+                    params.append(filters['contact_id'])
+                if filters.get('company_id'):
+                    company_filter = " AND i.company_id = ?"
+                    params.append(filters['company_id'])
+            
+            # Requête unifiée pour tous les types d'événements
+            query = f"""
+                -- Interactions
+                SELECT 
+                    'interaction' as type,
+                    i.id,
+                    i.date_interaction as date,
+                    i.type_interaction as sous_type,
+                    i.resume as titre,
+                    i.details as description,
+                    i.contact_id,
+                    i.company_id,
+                    i.opportunity_id,
+                    i.resultat,
+                    c.prenom || ' ' || c.nom_famille as contact_name,
+                    co.nom as company_name,
+                    o.nom as opportunity_name,
+                    NULL as statut,
+                    NULL as priorite
+                FROM interactions i
+                LEFT JOIN contacts c ON i.contact_id = c.id
+                LEFT JOIN companies co ON i.company_id = co.id
+                LEFT JOIN opportunities o ON i.opportunity_id = o.id
+                WHERE 1=1 {contact_filter} {company_filter}
+                
+                UNION ALL
+                
+                -- Activités CRM
+                SELECT 
+                    'activite' as type,
+                    a.id,
+                    a.date_activite as date,
+                    a.type_activite as sous_type,
+                    a.sujet as titre,
+                    a.description,
+                    a.contact_id,
+                    a.company_id,
+                    a.opportunity_id,
+                    NULL as resultat,
+                    c.prenom || ' ' || c.nom_famille as contact_name,
+                    co.nom as company_name,
+                    o.nom as opportunity_name,
+                    a.statut,
+                    a.priorite
+                FROM crm_activities a
+                LEFT JOIN contacts c ON a.contact_id = c.id
+                LEFT JOIN companies co ON a.company_id = co.id
+                LEFT JOIN opportunities o ON a.opportunity_id = o.id
+                WHERE 1=1 {contact_filter.replace('i.', 'a.')} {company_filter.replace('i.', 'a.')}
+                
+                UNION ALL
+                
+                -- Opportunités (création et changements de statut majeurs)
+                SELECT 
+                    'opportunite' as type,
+                    o.id,
+                    o.created_at as date,
+                    o.statut as sous_type,
+                    o.nom as titre,
+                    o.notes as description,
+                    o.contact_id,
+                    o.company_id,
+                    o.id as opportunity_id,
+                    NULL as resultat,
+                    c.prenom || ' ' || c.nom_famille as contact_name,
+                    co.nom as company_name,
+                    o.nom as opportunity_name,
+                    o.statut,
+                    CASE 
+                        WHEN o.montant_estime > 100000 THEN 'Haute'
+                        WHEN o.montant_estime > 50000 THEN 'Normale'
+                        ELSE 'Basse'
+                    END as priorite
+                FROM opportunities o
+                LEFT JOIN contacts c ON o.contact_id = c.id
+                LEFT JOIN companies co ON o.company_id = co.id
+                WHERE o.statut IN ('Prospection', 'Gagné', 'Perdu')
+                {contact_filter.replace('i.', 'o.')} {company_filter.replace('i.', 'o.')}
+                
+                ORDER BY date DESC
+                LIMIT ?
+            """
+            
+            # Ajouter la limite
+            limit = filters.get('limit', 50) if filters else 50
+            params_final = params * 3  # Pour les 3 parties de la requête UNION
+            params_final.append(limit)
+            
+            timeline = self.execute_query(query, tuple(params_final))
+            
+            # Enrichir les données avec des métadonnées supplémentaires
+            for item in timeline:
+                # Ajouter des icônes et couleurs selon le type
+                if item['type'] == 'interaction':
+                    type_icons = {
+                        'Email': '📧', 'Appel': '📞', 'Réunion': '🤝',
+                        'Note': '📝', 'Autre': '💬'
+                    }
+                    item['icon'] = type_icons.get(item['sous_type'], '💬')
+                    item['color'] = self._get_interaction_color(item['sous_type'])
+                elif item['type'] == 'activite':
+                    type_icons = {
+                        'Email': '📧', 'Appel': '📞', 'Réunion': '🤝',
+                        'Tâche': '📋', 'Suivi': '🔄', 'Présentation': '📊'
+                    }
+                    item['icon'] = type_icons.get(item['sous_type'], '📅')
+                    item['color'] = '#3B82F6'  # Bleu pour les activités
+                elif item['type'] == 'opportunite':
+                    status_icons = {
+                        'Prospection': '🎯', 'Gagné': '🏆', 'Perdu': '❌'
+                    }
+                    item['icon'] = status_icons.get(item['sous_type'], '💼')
+                    # Couleurs des statuts d'opportunité
+                    couleurs_statuts = {
+                        "Prospection": "#9CA3AF",
+                        "Qualification": "#3B82F6", 
+                        "Proposition": "#F59E0B",
+                        "Négociation": "#8B5CF6",
+                        "Gagné": "#10B981",
+                        "Perdu": "#EF4444"
+                    }
+                    item['color'] = couleurs_statuts.get(item['sous_type'], '#6B7280')
+                
+                # Formater la date
+                if item['date']:
+                    item['date_formatted'] = self._format_last_activity_date(item['date'])
+            
+            return timeline
+            
+        except Exception as e:
+            logger.error(f"Erreur récupération timeline: {e}")
+            return []
+    
+    def _get_interaction_color(self, type_interaction: str) -> str:
+        """Retourne la couleur associée au type d'interaction"""
+        colors = {
+            'Email': '#6B7280',
+            'Appel': '#3B82F6', 
+            'Réunion': '#8B5CF6',
+            'Note': '#10B981',
+            'Autre': '#F59E0B'
+        }
+        return colors.get(type_interaction, '#6B7280')
+    
+    def _format_last_activity_date(self, date_str: str) -> str:
+        """Formate une date pour l'affichage relatif"""
+        try:
+            from datetime import datetime
+            
+            # Parser la date
+            if isinstance(date_str, str):
+                # Essayer différents formats
+                for fmt in ['%Y-%m-%d %H:%M:%S', '%Y-%m-%d', '%Y-%m-%dT%H:%M:%S']:
+                    try:
+                        activity_date = datetime.strptime(date_str.split('.')[0], fmt)
+                        break
+                    except:
+                        continue
+                else:
+                    return date_str
+            else:
+                activity_date = date_str
+            
+            now = datetime.now()
+            diff = now - activity_date
+            
+            if diff.days == 0:
+                if diff.seconds < 3600:
+                    minutes = diff.seconds // 60
+                    return f"Il y a {minutes} min" if minutes > 1 else "À l'instant"
+                else:
+                    hours = diff.seconds // 3600
+                    return f"Il y a {hours}h"
+            elif diff.days == 1:
+                return "Hier"
+            elif diff.days < 7:
+                return f"Il y a {diff.days} jours"
+            elif diff.days < 30:
+                weeks = diff.days // 7
+                return f"Il y a {weeks} semaine{'s' if weeks > 1 else ''}"
+            else:
+                return activity_date.strftime('%d/%m/%Y')
+                
+        except Exception as e:
+            logger.debug(f"Erreur formatage date: {e}")
+            return str(date_str)
+    
+    def get_dashboard_metrics(self) -> Dict[str, Any]:
+        """Retourne les métriques principales pour le dashboard unifié"""
+        try:
+            metrics = {
+                'projects': {'total': 0, 'actifs': 0, 'ca_total': 0.0},
+                'formulaires': {'total': 0, 'en_attente': 0, 'montant_total': 0.0},
+                'inventory': {'total_items': 0, 'stocks_critiques': 0},
+                'fournisseurs': {'total': 0, 'actifs': 0},
+                'employees': {'total': 0, 'actifs': 0},
+                'bt_specialise': {'total': 0, 'assignations': 0, 'postes_reserves': 0},
+                'timetracker_bt_integration': {'total_pointages_bt': 0, 'heures_bt': 0.0, 'cout_bt': 0.0},
+                # NOUVEAU: Métriques postes de travail unifiées
+                'work_centers_unified': {
+                    'total_postes': 0,
+                    'postes_actifs': 0,
+                    'capacite_totale_jour': 0.0,
+                    'utilisation_moyenne': 0.0,
+                    'revenus_generes': 0.0,
+                    'goulots_detectes': 0
+                },
+                # ÉTAPE 3: Métriques production
+                'production_unified': {
+                    'projets_avec_bom': 0,
+                    'projets_avec_itineraires': 0,
+                    'materiaux_total': 0,
+                    'operations_total': 0,
+                    'valeur_bom_total': 0.0,
+                    'temps_planifie_total': 0.0
+                },
+                # NOUVEAU: Métriques Operations ↔ BT
+                'operations_bt_integration': {
+                    'operations_liees_bt': 0,
+                    'bt_avec_operations': 0,
+                    'temps_operations_bt': 0.0,
+                    'postes_utilises_bt': 0
+                },
+                # NOUVEAU: Métriques Communication TimeTracker
+                'communication_tt_integration': {
+                    'methodes_disponibles': 6,
+                    'integration_active': True,
+                    'derniere_sync': datetime.now().isoformat()
+                }
+            }
+            
+            # Métriques projets
+            result = self.execute_query("SELECT COUNT(*) as total, SUM(prix_estime) as ca FROM projects")
+            if result:
+                metrics['projects']['total'] = result[0]['total']
+                metrics['projects']['ca_total'] = result[0]['ca'] or 0.0
+            
+            result = self.execute_query("SELECT COUNT(*) as actifs FROM projects WHERE statut NOT IN ('TERMINÉ', 'ANNULÉ')")
+            if result:
+                metrics['projects']['actifs'] = result[0]['actifs']
+            
+            # Métriques formulaires
+            result = self.execute_query("SELECT COUNT(*) as total, SUM(montant_total) as montant FROM formulaires")
+            if result:
+                metrics['formulaires']['total'] = result[0]['total']
+                metrics['formulaires']['montant_total'] = result[0]['montant'] or 0.0
+            
+            result = self.execute_query("SELECT COUNT(*) as en_attente FROM formulaires WHERE statut IN ('BROUILLON', 'VALIDÉ')")
+            if result:
+                metrics['formulaires']['en_attente'] = result[0]['en_attente']
+            
+            # Métriques inventaire
+            result = self.execute_query("SELECT COUNT(*) as total FROM inventory_items")
+            if result:
+                metrics['inventory']['total_items'] = result[0]['total']
+            
+            result = self.execute_query("SELECT COUNT(*) as critiques FROM inventory_items WHERE statut IN ('CRITIQUE', 'FAIBLE', 'ÉPUISÉ')")
+            if result:
+                metrics['inventory']['stocks_critiques'] = result[0]['critiques']
+            
+            # Métriques fournisseurs
+            result = self.execute_query("SELECT COUNT(*) as total FROM companies WHERE type_company = 'FOURNISSEUR'")
+            if result:
+                metrics['fournisseurs']['total'] = result[0]['total']
+            
+            result = self.execute_query("SELECT COUNT(*) as actifs FROM fournisseurs WHERE est_actif = TRUE")
+            if result:
+                metrics['fournisseurs']['actifs'] = result[0]['actifs']
+            
+            # Métriques employés
+            result = self.execute_query("SELECT COUNT(*) as total FROM employees")
+            if result:
+                metrics['employees']['total'] = result[0]['total']
+            
+            result = self.execute_query("SELECT COUNT(*) as actifs FROM employees WHERE statut = 'ACTIF'")
+            if result:
+                metrics['employees']['actifs'] = result[0]['actifs']
+            
+            # Métriques BT spécialisées
+            result = self.execute_query("SELECT COUNT(*) as total FROM formulaires WHERE type_formulaire = 'BON_TRAVAIL'")
+            if result:
+                metrics['bt_specialise']['total'] = result[0]['total']
+            
+            result = self.execute_query("SELECT COUNT(*) as assignations FROM bt_assignations")
+            if result:
+                metrics['bt_specialise']['assignations'] = result[0]['assignations']
+            
+            result = self.execute_query("SELECT COUNT(*) as reservations FROM bt_reservations_postes WHERE statut = 'RÉSERVÉ'")
+            if result:
+                metrics['bt_specialise']['postes_reserves'] = result[0]['reservations']
+            
+            # ÉTAPE 2 : Métriques intégration TimeTracker ↔ BT
+            result = self.execute_query('''
+                SELECT 
+                    COUNT(*) as total_pointages_bt,
+                    COALESCE(SUM(total_hours), 0) as heures_bt,
+                    COALESCE(SUM(total_cost), 0) as cout_bt
+                FROM time_entries 
+                WHERE formulaire_bt_id IS NOT NULL
+            ''')
+            if result:
+                metrics['timetracker_bt_integration']['total_pointages_bt'] = result[0]['total_pointages_bt']
+                metrics['timetracker_bt_integration']['heures_bt'] = round(result[0]['heures_bt'], 1)
+                metrics['timetracker_bt_integration']['cout_bt'] = round(result[0]['cout_bt'], 2)
+            
+            # NOUVEAU: Métriques postes de travail unifiées
+            wc_stats_result = self.execute_query('''
+                SELECT 
+                    COUNT(*) as total_postes,
+                    COUNT(CASE WHEN statut = 'ACTIF' THEN 1 END) as postes_actifs,
+                    COALESCE(SUM(capacite_theorique), 0) as capacite_totale,
+                    COALESCE(AVG(CASE WHEN utilization_rate_30d > 0 THEN utilization_rate_30d END), 0) as utilisation_moyenne
+                FROM view_work_centers_with_stats
+            ''')
+            
+            if wc_stats_result:
+                wc_data = dict(wc_stats_result[0])
+                metrics['work_centers_unified'].update({
+                    'total_postes': wc_data['total_postes'],
+                    'postes_actifs': wc_data['postes_actifs'],
+                    'capacite_totale_jour': wc_data['capacite_totale'],
+                    'utilisation_moyenne': wc_data['utilisation_moyenne']
+                })
+            
+            # Revenus générés par les postes
+            revenue_result = self.execute_query('''
+                SELECT COALESCE(SUM(total_revenue_generated), 0) as total_revenue
+                FROM view_work_centers_with_stats
+            ''')
+            if revenue_result:
+                metrics['work_centers_unified']['revenus_generes'] = revenue_result[0]['total_revenue']
+            
+            # Goulots détectés
+            bottlenecks_result = self.execute_query('''
+                SELECT COUNT(*) as goulots_count
+                FROM view_bottlenecks_realtime
+                WHERE bottleneck_level IN ('CRITIQUE', 'ÉLEVÉ')
+            ''')
+            if bottlenecks_result:
+                metrics['work_centers_unified']['goulots_detectes'] = bottlenecks_result[0]['goulots_count']
+            
+            # ÉTAPE 3: Métriques production unifiées
+            production_metrics = self.get_production_dashboard_metrics()
+            if production_metrics:
+                metrics['production_unified'] = {
+                    'projets_avec_bom': production_metrics.get('nomenclatures', {}).get('projets_avec_bom', 0),
+                    'projets_avec_itineraires': production_metrics.get('itineraires', {}).get('projets_avec_operations', 0),
+                    'materiaux_total': production_metrics.get('nomenclatures', {}).get('materiaux_total', 0),
+                    'operations_total': production_metrics.get('itineraires', {}).get('operations_total', 0),
+                    'valeur_bom_total': production_metrics.get('nomenclatures', {}).get('valeur_moyenne_bom', 0.0),
+                    'temps_planifie_total': production_metrics.get('itineraires', {}).get('temps_total_planifie', 0.0)
+                }
+            
+            # NOUVEAU: Métriques Operations ↔ BT
+            operations_bt_result = self.execute_query('''
+                SELECT 
+                    COUNT(*) as operations_liees_bt,
+                    COUNT(DISTINCT formulaire_bt_id) as bt_avec_operations,
+                    COALESCE(SUM(temps_estime), 0) as temps_operations_bt,
+                    COUNT(DISTINCT work_center_id) as postes_utilises_bt
+                FROM operations 
+                WHERE formulaire_bt_id IS NOT NULL
+            ''')
+            if operations_bt_result:
+                ops_bt_data = dict(operations_bt_result[0])
+                metrics['operations_bt_integration'].update(ops_bt_data)
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"Erreur métriques dashboard unifié: {e}")
+            return {}
+    
+    def generate_monthly_report(self, year: int, month: int) -> Dict[str, Any]:
+        """Génère un rapport mensuel complet"""
+        try:
+            report = {
+                'periode': f"{year}-{month:02d}",
+                'formulaires_crees': 0,
+                'montant_commandes': 0.0,
+                'projets_livres': 0,
+                'stocks_mouvements': 0,
+                'performances_fournisseurs': [],
+                'bt_performance': {'total_bt': 0, 'assignations_mois': 0, 'completion_rate': 0.0},
+                'timetracker_bt_mensuel': {'sessions_bt': 0, 'heures_bt': 0.0, 'cout_bt': 0.0},  # ÉTAPE 2
+                'work_centers_performance': {'nouveaux_postes': 0, 'utilisation_moyenne': 0.0, 'revenus_generes': 0.0},  # INTERFACE UNIFIÉE
+                'production_performance': {'nouveaux_bom': 0, 'nouvelles_operations': 0, 'projets_production': 0},  # ÉTAPE 3
+                'operations_bt_performance': {'operations_bt_creees': 0, 'bt_operations_mois': 0, 'temps_operations_bt': 0.0},  # NOUVEAU
+                'communication_tt_performance': {'syncs_effectuees': 0, 'progressions_recalculees': 0, 'sessions_nettoyees': 0},  # NOUVEAU
+                'alertes': []
+            }
+            
+            # Formulaires créés dans le mois
+            query = '''
+                SELECT COUNT(*) as count, SUM(montant_total) as montant
+                FROM formulaires 
+                WHERE strftime('%Y-%m', date_creation) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['formulaires_crees'] = result[0]['count']
+                report['montant_commandes'] = result[0]['montant'] or 0.0
+            
+            # Projets livrés
+            query = '''
+                SELECT COUNT(*) as livres
+                FROM projects 
+                WHERE statut = 'TERMINÉ' 
+                AND strftime('%Y-%m', updated_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['projets_livres'] = result[0]['livres']
+            
+            # Mouvements d'inventaire
+            query = '''
+                SELECT COUNT(*) as mouvements
+                FROM inventory_history 
+                WHERE strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['stocks_mouvements'] = result[0]['mouvements']
+            
+            # Performances fournisseurs (basique)
+            query = '''
+                SELECT c.nom, COUNT(f.id) as commandes, SUM(f.montant_total) as montant
+                FROM formulaires f
+                JOIN companies c ON f.company_id = c.id
+                WHERE f.type_formulaire IN ('BON_ACHAT', 'BON_COMMANDE')
+                AND strftime('%Y-%m', f.date_creation) = ?
+                GROUP BY c.id, c.nom
+                ORDER BY montant DESC
+                LIMIT 10
+            '''
+            rows = self.execute_query(query, (f"{year}-{month:02d}",))
+            report['performances_fournisseurs'] = [dict(row) for row in rows]
+            
+            # Performance BT mensuelle
+            query = '''
+                SELECT COUNT(*) as total_bt
+                FROM formulaires 
+                WHERE type_formulaire = 'BON_TRAVAIL'
+                AND strftime('%Y-%m', date_creation) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['bt_performance']['total_bt'] = result[0]['total_bt']
+            
+            query = '''
+                SELECT COUNT(*) as assignations
+                FROM bt_assignations 
+                WHERE strftime('%Y-%m', date_assignation) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['bt_performance']['assignations_mois'] = result[0]['assignations']
+            
+            # Calcul taux de completion BT
+            if report['bt_performance']['total_bt'] > 0:
+                query = '''
+                    SELECT COUNT(*) as termines
+                    FROM formulaires 
+                    WHERE type_formulaire = 'BON_TRAVAIL'
+                    AND statut = 'TERMINÉ'
+                    AND strftime('%Y-%m', date_creation) = ?
+                '''
+                result = self.execute_query(query, (f"{year}-{month:02d}",))
+                if result:
+                    termines = result[0]['termines']
+                    report['bt_performance']['completion_rate'] = (termines / report['bt_performance']['total_bt']) * 100
+            
+            # ÉTAPE 2 : Performance TimeTracker BT mensuelle
+            query = '''
+                SELECT 
+                    COUNT(*) as sessions_bt,
+                    COALESCE(SUM(total_hours), 0) as heures_bt,
+                    COALESCE(SUM(total_cost), 0) as cout_bt
+                FROM time_entries 
+                WHERE formulaire_bt_id IS NOT NULL
+                AND strftime('%Y-%m', punch_in) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['timetracker_bt_mensuel']['sessions_bt'] = result[0]['sessions_bt']
+                report['timetracker_bt_mensuel']['heures_bt'] = round(result[0]['heures_bt'], 1)
+                report['timetracker_bt_mensuel']['cout_bt'] = round(result[0]['cout_bt'], 2)
+            
+            # INTERFACE UNIFIÉE : Performance postes de travail mensuelle
+            query = '''
+                SELECT COUNT(*) as nouveaux_postes
+                FROM work_centers
+                WHERE strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['work_centers_performance']['nouveaux_postes'] = result[0]['nouveaux_postes']
+            
+            # Utilisation moyenne des postes sur le mois
+            query = '''
+                SELECT 
+                    COALESCE(AVG(wc.capacite_theorique), 0) as capacite_moyenne,
+                    COALESCE(SUM(te.total_hours), 0) as heures_utilisees,
+                    COALESCE(SUM(te.total_cost), 0) as revenus_generes
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                LEFT JOIN time_entries te ON o.id = te.operation_id 
+                    AND strftime('%Y-%m', te.punch_in) = ?
+                WHERE wc.statut = 'ACTIF'
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                data = dict(result[0])
+                if data['capacite_moyenne'] > 0:
+                    # Calcul approximatif de l'utilisation moyenne du mois (30 jours)
+                    days_in_month = 30
+                    capacity_total_month = data['capacite_moyenne'] * days_in_month
+                    utilization = (data['heures_utilisees'] / capacity_total_month * 100) if capacity_total_month > 0 else 0
+                    report['work_centers_performance']['utilisation_moyenne'] = round(utilization, 2)
+                
+                report['work_centers_performance']['revenus_generes'] = round(data['revenus_generes'], 2)
+            
+            # ÉTAPE 3 : Performance production mensuelle
+            query = '''
+                SELECT COUNT(*) as nouveaux_bom
+                FROM materials
+                WHERE strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['production_performance']['nouveaux_bom'] = result[0]['nouveaux_bom']
+            
+            query = '''
+                SELECT COUNT(*) as nouvelles_operations
+                FROM operations
+                WHERE strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['production_performance']['nouvelles_operations'] = result[0]['nouvelles_operations']
+            
+            query = '''
+                SELECT COUNT(DISTINCT project_id) as projets_production
+                FROM materials
+                WHERE strftime('%Y-%m', created_at) = ?
+                AND project_id IS NOT NULL
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['production_performance']['projets_production'] = result[0]['projets_production']
+            
+            # NOUVEAU : Performance Operations ↔ BT mensuelle
+            query = '''
+                SELECT COUNT(*) as operations_bt_creees
+                FROM operations
+                WHERE formulaire_bt_id IS NOT NULL
+                AND strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['operations_bt_performance']['operations_bt_creees'] = result[0]['operations_bt_creees']
+            
+            query = '''
+                SELECT COUNT(DISTINCT formulaire_bt_id) as bt_operations_mois
+                FROM operations
+                WHERE formulaire_bt_id IS NOT NULL
+                AND strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['operations_bt_performance']['bt_operations_mois'] = result[0]['bt_operations_mois']
+            
+            query = '''
+                SELECT COALESCE(SUM(temps_estime), 0) as temps_operations_bt
+                FROM operations
+                WHERE formulaire_bt_id IS NOT NULL
+                AND strftime('%Y-%m', created_at) = ?
+            '''
+            result = self.execute_query(query, (f"{year}-{month:02d}",))
+            if result:
+                report['operations_bt_performance']['temps_operations_bt'] = round(result[0]['temps_operations_bt'], 2)
+            
+            # NOUVEAU : Performance Communication TimeTracker mensuelle (simulée)
+            report['communication_tt_performance'] = {
+                'syncs_effectuees': 30,  # Une par jour approximativement
+                'progressions_recalculees': report['bt_performance']['total_bt'] * 2,  # Estimation
+                'sessions_nettoyees': 5  # Estimation du nettoyage
+            }
+            
+            return report
+            
+        except Exception as e:
+            logger.error(f"Erreur génération rapport mensuel: {e}")
+            return {}
+
+        # === AMÉLIORATIONS D'INTÉGRATION KANBAN ↔ ERP_DATABASE ===
+        
+        def get_projets_for_kanban(self) -> List[Dict]:
+            """Récupère les projets formatés pour le Kanban avec toutes les jointures nécessaires"""
+            try:
+                query = '''
+                    SELECT p.*, 
+                           c.nom as client_company_nom,
+                           c.secteur as client_secteur,
+                           COUNT(DISTINCT o.id) as nb_operations,
+                           COUNT(DISTINCT m.id) as nb_materiaux,
+                           COALESCE(SUM(m.quantite * m.prix_unitaire), 0) as cout_materiaux_estime
+                    FROM projects p
+                    LEFT JOIN companies c ON p.client_company_id = c.id
+                    LEFT JOIN operations o ON p.id = o.project_id
+                    LEFT JOIN materials m ON p.id = m.project_id
+                    GROUP BY p.id
+                    ORDER BY 
+                        CASE p.priorite 
+                            WHEN 'ÉLEVÉ' THEN 1
+                            WHEN 'MOYEN' THEN 2
+                            WHEN 'BAS' THEN 3
+                            ELSE 4
+                        END,
+                        p.date_prevu ASC
+                '''
+                rows = self.execute_query(query)
+                return [dict(row) for row in rows]
+            except Exception as e:
+                logger.error(f"Erreur récupération projets pour kanban: {e}")
+                return []
+    
+        def update_project_status_for_kanban(self, project_id: int, new_status: str, employee_id: int = None) -> bool:
+            """Met à jour le statut d'un projet avec traçabilité (pour drag & drop kanban)"""
+            try:
+                # Récupérer l'ancien statut
+                old_status_result = self.execute_query("SELECT statut FROM projects WHERE id = ?", (project_id,))
+                if not old_status_result:
+                    return False
+                
+                old_status = old_status_result[0]['statut']
+                
+                # Mettre à jour le statut
+                affected = self.execute_update(
+                    "UPDATE projects SET statut = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (new_status, project_id)
+                )
+                
+                if affected > 0:
+                    # Enregistrer dans l'historique si c'est un projet avec BT
+                    bt_result = self.execute_query(
+                        "SELECT id FROM formulaires WHERE project_id = ? AND type_formulaire = 'BON_TRAVAIL'",
+                        (project_id,)
+                    )
+                    
+                    if bt_result and employee_id:
+                        for bt in bt_result:
+                            self.execute_insert(
+                                """INSERT INTO formulaire_validations 
+                                   (formulaire_id, employee_id, type_validation, ancien_statut, nouveau_statut, commentaires)
+                                   VALUES (?, ?, 'CHANGEMENT_STATUT_PROJET', ?, ?, ?)""",
+                                (bt['id'], employee_id, old_status, new_status, f"Projet déplacé via Kanban: {old_status} → {new_status}")
+                            )
+                    
+                    logger.info(f"✅ Statut projet #{project_id} mis à jour: {old_status} → {new_status}")
+                    return True
+                
+                return False
+                
+            except Exception as e:
+                logger.error(f"Erreur mise à jour statut projet kanban: {e}")
+                return False
+    
+        def get_kanban_statistics(self) -> Dict[str, Any]:
+            """Statistiques spécialisées pour les vues Kanban"""
+            try:
+                stats = {
+                    'projets': {
+                        'par_statut': {},
+                        'par_priorite': {},
+                        'total': 0,
+                        'ca_total': 0.0
+                    },
+                    'bts': {
+                        'par_poste': {},
+                        'par_statut': {},
+                        'total_assignes': 0
+                    },
+                    'operations': {
+                        'par_poste': {},
+                        'par_statut': {},
+                        'charge_totale': 0.0
+                    }
+                }
+                
+                # Statistiques projets
+                projets_stats = self.execute_query('''
+                    SELECT statut, priorite, COUNT(*) as count, SUM(prix_estime) as ca
+                    FROM projects
+                    GROUP BY statut, priorite
+                ''')
+                
+                for row in projets_stats:
+                    statut, priorite = row['statut'], row['priorite']
+                    count, ca = row['count'], row['ca'] or 0
+                    
+                    if statut not in stats['projets']['par_statut']:
+                        stats['projets']['par_statut'][statut] = 0
+                    stats['projets']['par_statut'][statut] += count
+                    
+                    if priorite not in stats['projets']['par_priorite']:
+                        stats['projets']['par_priorite'][priorite] = 0
+                    stats['projets']['par_priorite'][priorite] += count
+                    
+                    stats['projets']['total'] += count
+                    stats['projets']['ca_total'] += ca
+                
+                # Statistiques BTs par postes
+                bt_postes_stats = self.execute_query('''
+                    SELECT wc.nom as poste_nom, f.statut, COUNT(*) as count
+                    FROM formulaires f
+                    JOIN operations o ON f.id = o.formulaire_bt_id
+                    JOIN work_centers wc ON o.work_center_id = wc.id
+                    WHERE f.type_formulaire = 'BON_TRAVAIL'
+                    GROUP BY wc.nom, f.statut
+                ''')
+                
+                for row in bt_postes_stats:
+                    poste, statut, count = row['poste_nom'], row['statut'], row['count']
+                    
+                    if poste not in stats['bts']['par_poste']:
+                        stats['bts']['par_poste'][poste] = 0
+                    stats['bts']['par_poste'][poste] += count
+                    
+                    if statut not in stats['bts']['par_statut']:
+                        stats['bts']['par_statut'][statut] = 0
+                    stats['bts']['par_statut'][statut] += count
+                
+                # Statistiques opérations
+                ops_stats = self.execute_query('''
+                    SELECT wc.nom as poste_nom, o.statut, COUNT(*) as count, SUM(o.temps_estime) as temps_total
+                    FROM operations o
+                    JOIN work_centers wc ON o.work_center_id = wc.id
+                    GROUP BY wc.nom, o.statut
+                ''')
+                
+                for row in ops_stats:
+                    poste, statut = row['poste_nom'], row['statut']
+                    count, temps = row['count'], row['temps_total'] or 0
+                    
+                    if poste not in stats['operations']['par_poste']:
+                        stats['operations']['par_poste'][poste] = {'count': 0, 'temps': 0.0}
+                    stats['operations']['par_poste'][poste]['count'] += count
+                    stats['operations']['par_poste'][poste]['temps'] += temps
+                    
+                    if statut not in stats['operations']['par_statut']:
+                        stats['operations']['par_statut'][statut] = 0
+                    stats['operations']['par_statut'][statut] += count
+                    
+                    stats['operations']['charge_totale'] += temps
+                
+                return stats
+                
+            except Exception as e:
+                logger.error(f"Erreur statistiques kanban: {e}")
+                return {}
+    
+        # === NOUVELLES MÉTHODES POUR ANALYSE DE CAPACITÉ ===
+    
+    def get_capacity_analysis_by_work_center(self, period_days: int = 30) -> List[Dict[str, Any]]:
+        """
+        Analyse détaillée de la capacité par poste de travail
+        Retourne la capacité théorique vs utilisée, par produit si applicable
+        """
+        try:
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=period_days)
+            
+            query = """
+                SELECT 
+                    wc.id,
+                    wc.nom as poste_nom,
+                    wc.departement,
+                    wc.type_operation,
+                    wc.capacite_theorique,
+                    wc.taux_horaire,
+                    wc.statut,
+                    COUNT(DISTINCT o.id) as nb_operations,
+                    COUNT(DISTINCT o.project_id) as nb_projets,
+                    COALESCE(SUM(o.temps_estime), 0) as temps_planifie,
+                    COALESCE(SUM(te.total_hours), 0) as temps_reel,
+                    COUNT(DISTINCT te.employee_id) as nb_employes,
+                    COUNT(DISTINCT DATE(te.punch_in)) as jours_actifs
+                FROM work_centers wc
+                LEFT JOIN operations o ON wc.id = o.work_center_id
+                    AND o.created_at >= ?
+                LEFT JOIN time_entries te ON o.id = te.operation_id
+                    AND te.punch_in >= ?
+                GROUP BY wc.id
+                ORDER BY wc.departement, wc.nom
+            """
+            
+            results = self.execute_query(query, (start_date, start_date))
+            
+            capacity_data = []
+            for row in results:
+                data = dict(row)
+                
+                # Calcul de la capacité disponible sur la période
+                capacite_jour = data['capacite_theorique']
+                jours_ouvrables = period_days * 5 / 7  # Approximation jours ouvrables
+                capacite_totale = capacite_jour * jours_ouvrables
+                
+                # Calcul du taux d'utilisation
+                taux_utilisation = (data['temps_reel'] / capacite_totale * 100) if capacite_totale > 0 else 0
+                
+                # Calcul de l'efficacité (temps réel vs temps planifié)
+                efficacite = (data['temps_planifie'] / data['temps_reel'] * 100) if data['temps_reel'] > 0 else 0
+                
+                data.update({
+                    'capacite_totale_periode': round(capacite_totale, 2),
+                    'capacite_disponible': round(capacite_totale - data['temps_reel'], 2),
+                    'taux_utilisation': round(taux_utilisation, 2),
+                    'efficacite': round(efficacite, 2),
+                    'productivite_journaliere': round(data['temps_reel'] / data['jours_actifs'], 2) if data['jours_actifs'] > 0 else 0,
+                    'revenus_generes': round(data['temps_reel'] * data['taux_horaire'], 2)
+                })
+                
+                capacity_data.append(data)
+            
+            return capacity_data
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse capacité: {e}")
+            return []
+    
+    def get_product_capacity_by_work_center(self, work_center_id: int = None) -> List[Dict[str, Any]]:
+        """
+        Analyse de la capacité de production par type de produit pour chaque poste
+        """
+        try:
+            base_query = """
+                SELECT 
+                    wc.id as work_center_id,
+                    wc.nom as poste_nom,
+                    p.id as project_id,
+                    p.nom_projet,
+                    p.client_nom_cache as client,
+                    o.description as operation_description,
+                    o.temps_estime,
+                    o.statut as operation_statut,
+                    COUNT(DISTINCT m.id) as nb_materiaux,
+                    GROUP_CONCAT(DISTINCT m.nom_materiel) as materiaux_list
+                FROM work_centers wc
+                INNER JOIN operations o ON wc.id = o.work_center_id
+                INNER JOIN projects p ON o.project_id = p.id
+                LEFT JOIN materials m ON p.id = m.project_id
+                WHERE wc.statut = 'ACTIF'
+            """
+            
+            params = []
+            if work_center_id:
+                base_query += " AND wc.id = ?"
+                params.append(work_center_id)
+            
+            base_query += """
+                GROUP BY wc.id, p.id, o.id
+                ORDER BY wc.nom, p.nom_projet
+            """
+            
+            results = self.execute_query(base_query, params)
+            
+            # Organiser par poste et calculer les capacités
+            capacity_by_product = {}
+            for row in results:
+                wc_id = row['work_center_id']
+                if wc_id not in capacity_by_product:
+                    capacity_by_product[wc_id] = {
+                        'poste_nom': row['poste_nom'],
+                        'produits': {}
+                    }
+                
+                # Extraire le type de produit depuis le nom du projet ou la description
+                product_type = self._extract_product_type(row['nom_projet'], row['operation_description'])
+                
+                if product_type not in capacity_by_product[wc_id]['produits']:
+                    capacity_by_product[wc_id]['produits'][product_type] = {
+                        'nb_projets': 0,
+                        'temps_total': 0,
+                        'materiaux_utilises': set(),
+                        'operations': []
+                    }
+                
+                capacity_by_product[wc_id]['produits'][product_type]['nb_projets'] += 1
+                capacity_by_product[wc_id]['produits'][product_type]['temps_total'] += row['temps_estime'] or 0
+                
+                if row['materiaux_list']:
+                    for mat in row['materiaux_list'].split(','):
+                        capacity_by_product[wc_id]['produits'][product_type]['materiaux_utilises'].add(mat.strip())
+                
+                capacity_by_product[wc_id]['produits'][product_type]['operations'].append({
+                    'projet': row['nom_projet'],
+                    'client': row['client'],
+                    'temps': row['temps_estime'],
+                    'statut': row['operation_statut']
+                })
+            
+            # Convertir en liste pour retour
+            result_list = []
+            for wc_id, wc_data in capacity_by_product.items():
+                for product_type, product_data in wc_data['produits'].items():
+                    result_list.append({
+                        'work_center_id': wc_id,
+                        'poste_nom': wc_data['poste_nom'],
+                        'type_produit': product_type,
+                        'nb_projets': product_data['nb_projets'],
+                        'temps_total': round(product_data['temps_total'], 2),
+                        'temps_moyen': round(product_data['temps_total'] / product_data['nb_projets'], 2) if product_data['nb_projets'] > 0 else 0,
+                        'materiaux_uniques': len(product_data['materiaux_utilises']),
+                        'materiaux_list': list(product_data['materiaux_utilises'])[:5]  # Top 5 matériaux
+                    })
+            
+            return sorted(result_list, key=lambda x: (x['poste_nom'], -x['temps_total']))
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse capacité produit: {e}")
+            return []
+    
+    def _extract_product_type(self, project_name: str, operation_desc: str) -> str:
+        """
+        Extrait le type de produit depuis le nom du projet ou la description
+        """
+        # Logique simple d'extraction - à adapter selon vos conventions
+        combined_text = f"{project_name} {operation_desc}".lower()
+        
+        # Dictionnaire de mots-clés pour identifier les types de produits
+        product_keywords = {
+            'Structure métallique': ['structure', 'charpente', 'poutre', 'colonne'],
+            'Tôlerie': ['tôle', 'pliage', 'découpe laser', 'perforation'],
+            'Soudure': ['soudure', 'soudage', 'assemblage soudé'],
+            'Usinage': ['usinage', 'fraisage', 'tournage', 'perçage'],
+            'Finition': ['peinture', 'galvanisation', 'polissage', 'finition'],
+            'Assemblage': ['assemblage', 'montage', 'kit'],
+            'Prototype': ['prototype', 'test', 'développement'],
+            'Série': ['série', 'production', 'lot']
+        }
+        
+        for product_type, keywords in product_keywords.items():
+            if any(keyword in combined_text for keyword in keywords):
+                return product_type
+        
+        return 'Autre'
+    
+    def get_bottleneck_analysis(self) -> List[Dict[str, Any]]:
+        """
+        Identifie les goulots d'étranglement dans la production
+        """
+        try:
+            query = """
+                WITH work_center_load AS (
+                    SELECT 
+                        wc.id,
+                        wc.nom,
+                        wc.capacite_theorique,
+                        COUNT(DISTINCT o.id) as operations_en_attente,
+                        COALESCE(SUM(CASE WHEN o.statut IN ('EN_ATTENTE', 'PLANIFIE') THEN o.temps_estime ELSE 0 END), 0) as charge_en_attente,
+                        COALESCE(SUM(CASE WHEN o.statut = 'EN_COURS' THEN o.temps_estime ELSE 0 END), 0) as charge_en_cours
+                    FROM work_centers wc
+                    LEFT JOIN operations o ON wc.id = o.work_center_id
+                    WHERE wc.statut = 'ACTIF'
+                    GROUP BY wc.id
+                )
+                SELECT 
+                    *,
+                    (charge_en_attente + charge_en_cours) as charge_totale,
+                    CASE 
+                        WHEN capacite_theorique > 0 
+                        THEN ((charge_en_attente + charge_en_cours) / capacite_theorique) 
+                        ELSE 0 
+                    END as jours_de_retard
+                FROM work_center_load
+                WHERE (charge_en_attente + charge_en_cours) > 0
+                ORDER BY jours_de_retard DESC
+            """
+            
+            results = self.execute_query(query)
+            
+            bottlenecks = []
+            for row in results:
+                data = dict(row)
+                
+                # Classification du niveau de criticité
+                jours_retard = data['jours_de_retard']
+                if jours_retard > 5:
+                    criticite = 'CRITIQUE'
+                    couleur = '#ef4444'
+                elif jours_retard > 2:
+                    criticite = 'ÉLEVÉE'
+                    couleur = '#f59e0b'
+                elif jours_retard > 1:
+                    criticite = 'MODÉRÉE'
+                    couleur = '#3b82f6'
+                else:
+                    criticite = 'FAIBLE'
+                    couleur = '#10b981'
+                
+                data.update({
+                    'criticite': criticite,
+                    'couleur': couleur,
+                    'temps_resolution_estime': round(jours_retard * 8, 1)  # En heures
+                })
+                
+                bottlenecks.append(data)
+            
+            return bottlenecks
+            
+        except Exception as e:
+            logger.error(f"Erreur analyse goulots: {e}")
+            return []
+    
+    def reassign_operation_to_work_center(self, operation_id: int, new_work_center_name: str, employee_id: int = None) -> bool:
+        """Réassigne une opération à un nouveau poste de travail (pour drag & drop kanban)"""
+        try:
+            # Trouver le nouveau work_center_id
+            wc_result = self.execute_query(
+                "SELECT id FROM work_centers WHERE nom = ? AND statut = 'ACTIF'",
+                (new_work_center_name,)
+            )
+            
+            if not wc_result:
+                logger.error(f"Poste de travail '{new_work_center_name}' non trouvé ou inactif")
+                return False
+            
+            new_wc_id = wc_result[0]['id']
+            
+            # Récupérer l'ancienne assignation
+            old_assignment = self.execute_query(
+                "SELECT work_center_id, poste_travail FROM operations WHERE id = ?",
+                (operation_id,)
+            )
+            
+            if not old_assignment:
+                return False
+            
+            old_poste = old_assignment[0]['poste_travail']
+            
+            # Mettre à jour l'opération
+            affected = self.execute_update(
+                "UPDATE operations SET work_center_id = ?, poste_travail = ? WHERE id = ?",
+                (new_wc_id, new_work_center_name, operation_id)
+            )
+            
+            if affected > 0:
+                logger.info(f"✅ Opération #{operation_id} réassignée: {old_poste} → {new_work_center_name}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Erreur réassignation opération kanban: {e}")
+            return False
+    
+    def get_all_work_centers(self) -> List[Dict[str, Any]]:
+        """Récupère tous les postes de travail"""
+        try:
+            query = """
+                SELECT id, nom, departement, type_operation, capacite_theorique, 
+                       taux_horaire, statut, description, created_at
+                FROM work_centers
+                ORDER BY departement, nom
+            """
+            results = self.execute_query(query)
+            return [dict(row) for row in results]
+        except Exception as e:
+            logger.error(f"Erreur récupération postes: {e}")
+            return []
+    
+def show_kanban_unified_improved():
+    """Version améliorée du Kanban utilisant uniquement erp_db"""
+    if 'erp_db' not in st.session_state:
+        st.error("⚠️ Base de données ERP non initialisée.")
+        return
+    
+    erp_db = st.session_state.erp_db
+    
+    # Interface de sélection de vue
+    st.markdown("### 🔄 Vue Kanban Unifiée - Version Améliorée")
+    
+    vue_kanban = st.radio(
+        "**Choisissez la vue:**",
+        ["📋 Projets par Statuts", "🏭 BTs par Postes", "⚙️ Opérations par Postes"],
+        horizontal=True,
+        key="kanban_vue_amelioree"
+    )
+    
+    try:
+        if vue_kanban == "📋 Projets par Statuts":
+            show_kanban_projets_improved(erp_db)
+        elif vue_kanban == "🏭 BTs par Postes":
+            show_kanban_bts_improved(erp_db)
+        else:
+            show_kanban_operations_improved(erp_db)
+            
+        # Afficher les statistiques unifiées
+        show_kanban_stats_unified(erp_db)
+        
+    except Exception as e:
+        st.error(f"❌ Erreur affichage Kanban: {e}")
+        logger.error(f"Erreur kanban unifié: {e}")
+
+def show_kanban_projets_improved(erp_db):
+    """Version améliorée de la vue projets"""
+    try:
+        # Utiliser la nouvelle méthode centralisée
+        projets = erp_db.get_projets_for_kanban()
+        
+        if not projets:
+            st.info("📋 Aucun projet trouvé.")
+            return
+        
+        # Organiser par statut
+        statuts = ["À FAIRE", "EN COURS", "EN ATTENTE", "TERMINÉ", "LIVRAISON", "ANNULÉ"]
+        projets_par_statut = {statut: [] for statut in statuts}
+        
+        for projet in projets:
+            statut = projet.get('statut', 'À FAIRE')
+            if statut in projets_par_statut:
+                projets_par_statut[statut].append(projet)
+        
+        # Affichage en colonnes
+        colonnes = st.columns(len(statuts))
+        
+        for idx, statut in enumerate(statuts):
+            with colonnes[idx]:
+                st.markdown(f"**{statut}** ({len(projets_par_statut[statut])})")
+                
+                # Zone de dépôt pour drag & drop
+                if st.session_state.get('dragged_project_id'):
+                    if st.button(f"⬇️ Déposer ici", key=f"drop_{statut}"):
+                        project_id = st.session_state.dragged_project_id
+                        if erp_db.update_project_status_for_kanban(project_id, statut):
+                            st.success(f"✅ Projet déplacé vers {statut}")
+                            st.session_state.dragged_project_id = None
+                            st.rerun()
+                
+                # Afficher les projets
+                for projet in projets_par_statut[statut]:
+                    afficher_carte_projet_improved(projet, statut)
+        
+    except Exception as e:
+        st.error(f"Erreur vue projets: {e}")
+
+def afficher_carte_projet_improved(projet, statut):
+    """Carte projet améliorée avec plus d'informations"""
+    project_id = projet.get('id')
+    nom_projet = projet.get('nom_projet', 'N/A')
+    client_nom = projet.get('client_company_nom', 'Client non spécifié')
+    priorite = projet.get('priorite', 'MOYEN')
+    prix_estime = projet.get('prix_estime', 0)
+    nb_operations = projet.get('nb_operations', 0)
+    nb_materiaux = projet.get('nb_materiaux', 0)
+    
+    # Couleur selon priorité
+    couleur_priorite = {
+        'ÉLEVÉ': '#ef4444',
+        'MOYEN': '#f59e0b', 
+        'BAS': '#10b981'
+    }.get(priorite, '#6b7280')
+    
+    with st.container():
+        st.markdown(f"""
+        <div style='
+            border-left: 4px solid {couleur_priorite};
+            background: white;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        '>
+            <div style='font-weight: 600; color: #374151;'>#{project_id} - {nom_projet[:30]}{'...' if len(nom_projet) > 30 else ''}</div>
+            <div style='font-size: 0.85em; color: #6b7280; margin: 4px 0;'>👤 {client_nom}</div>
+            <div style='font-size: 0.85em; color: #6b7280; margin: 4px 0;'>💰 {prix_estime:,.0f}$</div>
+            <div style='font-size: 0.8em; color: #9ca3af;'>⚙️ {nb_operations} ops | 📦 {nb_materiaux} mat.</div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("👁️", key=f"view_{project_id}_{statut}", help="Voir détails"):
+                st.session_state.selected_project = projet
+                st.session_state.show_project_modal = True
+        with col2:
+            if st.button("➡️", key=f"move_{project_id}_{statut}", help="Déplacer"):
+                st.session_state.dragged_project_id = project_id
+                st.rerun()
+
+def show_kanban_stats_unified(erp_db):
+    """Affiche les statistiques unifiées en bas du Kanban"""
+    try:
+        stats = erp_db.get_kanban_statistics()
+        
+        if not stats:
+            return
+        
+        st.markdown("---")
+        st.markdown("### 📊 Statistiques Unifiées")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.markdown("**📋 Projets**")
+            st.metric("Total", stats['projets']['total'])
+            st.metric("CA Total", f"{stats['projets']['ca_total']:,.0f}$")
+            
+        with col2:
+            st.markdown("**🏭 Bons de Travail**")
+            total_bts = sum(stats['bts']['par_statut'].values())
+            st.metric("Total BTs", total_bts)
+            if stats['bts']['par_poste']:
+                poste_le_plus_charge = max(stats['bts']['par_poste'].items(), key=lambda x: x[1])
+                st.metric("Poste le + chargé", f"{poste_le_plus_charge[0]} ({poste_le_plus_charge[1]})")
+            
+        with col3:
+            st.markdown("**⚙️ Opérations**")
+            total_ops = sum(stats['operations']['par_statut'].values())
+            st.metric("Total Opérations", total_ops)
+            st.metric("Charge Totale", f"{stats['operations']['charge_totale']:.1f}h")
+        
+    except Exception as e:
+        st.error(f"Erreur statistiques: {e}")
+
+# 3. Configuration d'intégration pour app.py
+
+def setup_kanban_integration():
+    """Configure l'intégration Kanban dans l'application principale"""
+    if 'erp_db' not in st.session_state:
+        st.error("⚠️ ERPDatabase non initialisé")
+        return False
+    
+    # Vérifier que toutes les méthodes nécessaires existent
+    erp_db = st.session_state.erp_db
+    required_methods = [
+        'get_projets_for_kanban',
+        'update_project_status_for_kanban', 
+        'get_kanban_statistics',
+        'reassign_operation_to_work_center'
+    ]
+    
+    missing_methods = []
+    for method in required_methods:
+        if not hasattr(erp_db, method):
+            missing_methods.append(method)
+    
+    if missing_methods:
+        st.warning(f"⚠️ Méthodes manquantes dans ERPDatabase: {', '.join(missing_methods)}")
+        return False
+    
+    return True
+
+# Utilitaires pour conversion mesures impériales (préservation fonction existante)
+def convertir_pieds_pouces_fractions_en_valeur_decimale(mesure_str: str) -> float:
+    """
+    Convertit une mesure impériale en valeur décimale
+    Préserve la fonction existante du système
+    """
+    try:
+        import re
+        from fractions import Fraction
+        from math import gcd
+        
+        mesure_str = str(mesure_str).strip().lower()
+        mesure_str = mesure_str.replace('"', '"').replace("''", "'")
+        mesure_str = mesure_str.replace('ft', "'").replace('pieds', "'").replace('pied', "'")
+        mesure_str = mesure_str.replace('in', '"').replace('pouces', '"').replace('pouce', '"')
+        
+        if mesure_str == "0":
+            return 0.0
+        
+        total_pieds = 0.0
+        
+        # Pattern pour parsing
+        pattern = re.compile(
+            r"^\s*(?:(?P<feet>\d+(?:\.\d+)?)\s*(?:'|\sft|\spieds?)?)?"
+            r"\s*(?:(?P<inches>\d+(?:\.\d+)?)\s*(?:\"|\sin|\spouces?)?)?"
+            r"\s*(?:(?P<frac_num>\d+)\s*\/\s*(?P<frac_den>\d+)\s*(?:\"|\sin|\spouces?)?)?\s*$"
+        )
+        
+        match = pattern.match(mesure_str)
+        
+        if match and (match.group('feet') or match.group('inches') or match.group('frac_num')):
+            pieds = float(match.group('feet')) if match.group('feet') else 0.0
+            pouces = float(match.group('inches')) if match.group('inches') else 0.0
+            
+            if match.group('frac_num') and match.group('frac_den'):
+                num, den = int(match.group('frac_num')), int(match.group('frac_den'))
+                if den != 0:
+                    pouces += num / den
+            
+            total_pieds = pieds + (pouces / 12.0)
+        
+        return total_pieds
+        
+    except Exception:
+        return 0.0
+
+def convertir_imperial_vers_metrique(mesure_imperial: str) -> float:
+    """Convertit une mesure impériale en mètres"""
+    pieds = convertir_pieds_pouces_fractions_en_valeur_decimale(mesure_imperial)
+    return pieds * 0.3048
+
+# =========================================================================
+# MÉTHODES POUR CONFORMITÉ CONSTRUCTION QUÉBEC
+# =========================================================================
+
+def ajouter_licence_rbq(self, licence_data: Dict) -> bool:
+    """Ajoute une nouvelle licence RBQ"""
+    try:
+        query = """
+        INSERT INTO licences_rbq 
+        (numero_licence, nom_entreprise, categories, date_emission, date_expiration,
+         statut, cautionnement, assurance_responsabilite, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = (
+            licence_data['numero_licence'],
+            licence_data['nom_entreprise'],
+            licence_data.get('categories', ''),
+            licence_data.get('date_emission'),
+            licence_data.get('date_expiration'),
+            licence_data.get('statut', 'Active'),
+            licence_data.get('cautionnement', 0),
+            licence_data.get('assurance_responsabilite', 0),
+            licence_data.get('notes', '')
+        )
+        
+        self.execute_query(query, params)
+        return True
+    except Exception as e:
+        logger.error(f"Erreur ajout licence RBQ: {e}")
+        return False
+
+def obtenir_licences_rbq(self, statut: Optional[str] = None) -> List[Dict]:
+    """Récupère les licences RBQ avec filtre optionnel"""
+    try:
+        query = "SELECT * FROM licences_rbq"
+        params = []
+        
+        if statut and statut != "Tous":
+            query += " WHERE statut = ?"
+            params.append(statut)
+            
+        query += " ORDER BY date_expiration"
+        
+        return self.execute_query(query, params)
+    except Exception as e:
+        logger.error(f"Erreur récupération licences RBQ: {e}")
+        return []
+
+def ajouter_carte_ccq(self, carte_data: Dict) -> bool:
+    """Ajoute une nouvelle carte CCQ"""
+    try:
+        query = """
+        INSERT INTO cartes_ccq 
+        (employee_id, numero_carte, metier_principal, qualification,
+         metiers_additionnels, heures_totales, date_emission, date_renouvellement,
+         asp_construction, statut)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = (
+            carte_data['employee_id'],
+            carte_data['numero_carte'],
+            carte_data['metier_principal'],
+            carte_data.get('qualification', ''),
+            carte_data.get('metiers_additionnels', ''),
+            carte_data.get('heures_totales', 0),
+            carte_data.get('date_emission'),
+            carte_data.get('date_renouvellement'),
+            carte_data.get('asp_construction', False),
+            carte_data.get('statut', 'Active')
+        )
+        
+        self.execute_query(query, params)
+        return True
+    except Exception as e:
+        logger.error(f"Erreur ajout carte CCQ: {e}")
+        return False
+
+def obtenir_cartes_ccq(self, employee_id: Optional[int] = None) -> List[Dict]:
+    """Récupère les cartes CCQ"""
+    try:
+        query = """
+        SELECT c.*, e.nom || ' ' || e.prenom as employee_name
+        FROM cartes_ccq c
+        LEFT JOIN employees e ON c.employee_id = e.id
+        """
+        params = []
+        
+        if employee_id:
+            query += " WHERE c.employee_id = ?"
+            params.append(employee_id)
+            
+        query += " ORDER BY c.date_renouvellement"
+        
+        return self.execute_query(query, params)
+    except Exception as e:
+        logger.error(f"Erreur récupération cartes CCQ: {e}")
+        return []
+
+def ajouter_attestation(self, attestation_data: Dict) -> bool:
+    """Ajoute une nouvelle attestation de conformité"""
+    try:
+        query = """
+        INSERT INTO attestations_conformite 
+        (type, numero, date_emission, date_expiration, statut, fichier_path, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = (
+            attestation_data['type'],
+            attestation_data['numero'],
+            attestation_data.get('date_emission'),
+            attestation_data.get('date_expiration'),
+            attestation_data.get('statut', 'Valide'),
+            attestation_data.get('fichier_path', ''),
+            attestation_data.get('notes', '')
+        )
+        
+        self.execute_query(query, params)
+        return True
+    except Exception as e:
+        logger.error(f"Erreur ajout attestation: {e}")
+        return False
+
+def obtenir_attestations_expirant(self, jours: int = 30) -> List[Dict]:
+    """Récupère les attestations expirant dans les N prochains jours"""
+    try:
+        query = """
+        SELECT * FROM attestations_conformite
+        WHERE date_expiration <= DATE('now', '+' || ? || ' days')
+        AND statut = 'Valide'
+        ORDER BY date_expiration
+        """
+        
+        return self.execute_query(query, [jours])
+    except Exception as e:
+        logger.error(f"Erreur récupération attestations expirant: {e}")
+        return []
+
+def ajouter_sous_traitant(self, sous_traitant_data: Dict) -> bool:
+    """Ajoute un nouveau sous-traitant construction"""
+    try:
+        query = """
+        INSERT INTO sous_traitants 
+        (company_id, numero_rbq, categories_rbq, licence_valide_jusqu,
+         attestation_revenu_quebec, attestation_ccq, attestation_cnesst,
+         assurance_responsabilite, evaluation_securite, evaluation_qualite,
+         specialites, notes_evaluation, est_actif)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = (
+            sous_traitant_data['company_id'],
+            sous_traitant_data.get('numero_rbq', ''),
+            sous_traitant_data.get('categories_rbq', ''),
+            sous_traitant_data.get('licence_valide_jusqu'),
+            sous_traitant_data.get('attestation_revenu_quebec', False),
+            sous_traitant_data.get('attestation_ccq', False),
+            sous_traitant_data.get('attestation_cnesst', False),
+            sous_traitant_data.get('assurance_responsabilite', 0),
+            sous_traitant_data.get('evaluation_securite', 5),
+            sous_traitant_data.get('evaluation_qualite', 5),
+            sous_traitant_data.get('specialites', ''),
+            sous_traitant_data.get('notes_evaluation', ''),
+            sous_traitant_data.get('est_actif', True)
+        )
+        
+        self.execute_query(query, params)
+        return True
+    except Exception as e:
+        logger.error(f"Erreur ajout sous-traitant: {e}")
+        return False
+
+def obtenir_phases_construction(self, project_id: int) -> List[Dict]:
+    """Récupère les phases de construction d'un projet"""
+    try:
+        query = """
+        SELECT * FROM phases_construction 
+        WHERE project_id = ?
+        ORDER BY ordre_phase
+        """
+        
+        return self.execute_query(query, [project_id])
+    except Exception as e:
+        logger.error(f"Erreur récupération phases construction: {e}")
+        return []
+
+def ajouter_inspection_chantier(self, inspection_data: Dict) -> bool:
+    """Ajoute une nouvelle inspection de chantier"""
+    try:
+        query = """
+        INSERT INTO inspections_chantier 
+        (project_id, phase_id, type_inspection, date_inspection, inspecteur,
+         organisme, resultat, deficiences, corrections_requises, date_limite_corrections,
+         corrections_completees, rapport_path, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        
+        params = (
+            inspection_data['project_id'],
+            inspection_data.get('phase_id'),
+            inspection_data['type_inspection'],
+            inspection_data['date_inspection'],
+            inspection_data.get('inspecteur', ''),
+            inspection_data.get('organisme', ''),
+            inspection_data.get('resultat', 'En attente'),
+            inspection_data.get('deficiences', ''),
+            inspection_data.get('corrections_requises', ''),
+            inspection_data.get('date_limite_corrections'),
+            inspection_data.get('corrections_completees', False),
+            inspection_data.get('rapport_path', ''),
+            inspection_data.get('notes', '')
+        )
+        
+        self.execute_query(query, params)
+        return True
+    except Exception as e:
+        logger.error(f"Erreur ajout inspection: {e}")
+        return False
+
+def verifier_conformite_projet(self, project_id: int) -> Dict:
+    """Vérifie la conformité complète d'un projet"""
+    try:
+        conformite = {
+            "est_conforme": True,
+            "licences_valides": True,
+            "attestations_valides": True,
+            "inspections_conformes": True,
+            "details": []
+        }
+        
+        # Vérifier licences RBQ
+        licences = self.execute_query(
+            "SELECT * FROM licences_rbq WHERE statut != 'Active' OR date_expiration < DATE('now')"
+        )
+        if licences:
+            conformite["est_conforme"] = False
+            conformite["licences_valides"] = False
+            conformite["details"].append("Licences RBQ expirées ou invalides")
+        
+        # Vérifier attestations
+        attestations = self.execute_query(
+            "SELECT * FROM attestations_conformite WHERE statut != 'Valide' OR date_expiration < DATE('now')"
+        )
+        if attestations:
+            conformite["est_conforme"] = False
+            conformite["attestations_valides"] = False
+            conformite["details"].append("Attestations expirées ou invalides")
+        
+        # Vérifier inspections du projet
+        inspections = self.execute_query(
+            "SELECT * FROM inspections_chantier WHERE project_id = ? AND resultat = 'Non-conforme' AND corrections_completees = 0",
+            [project_id]
+        )
+        if inspections:
+            conformite["est_conforme"] = False
+            conformite["inspections_conformes"] = False
+            conformite["details"].append(f"{len(inspections)} inspection(s) non-conforme(s) en attente de correction")
+        
+        return conformite
+    except Exception as e:
+        logger.error(f"Erreur vérification conformité: {e}")
+        return {"est_conforme": False, "details": ["Erreur lors de la vérification"]}
+
+def obtenir_stats_conformite(self) -> Dict:
+    """Obtient les statistiques globales de conformité"""
+    try:
+        stats = {}
+        
+        # Licences RBQ
+        stats['licences_rbq'] = {
+            'total': self.execute_query("SELECT COUNT(*) as count FROM licences_rbq")[0]['count'],
+            'actives': self.execute_query("SELECT COUNT(*) as count FROM licences_rbq WHERE statut = 'Active'")[0]['count'],
+            'expirees': self.execute_query("SELECT COUNT(*) as count FROM licences_rbq WHERE date_expiration < DATE('now')")[0]['count']
+        }
+        
+        # Cartes CCQ
+        stats['cartes_ccq'] = {
+            'total': self.execute_query("SELECT COUNT(*) as count FROM cartes_ccq")[0]['count'],
+            'actives': self.execute_query("SELECT COUNT(*) as count FROM cartes_ccq WHERE statut = 'Active'")[0]['count']
+        }
+        
+        # Attestations
+        stats['attestations'] = {
+            'total': self.execute_query("SELECT COUNT(*) as count FROM attestations_conformite")[0]['count'],
+            'valides': self.execute_query("SELECT COUNT(*) as count FROM attestations_conformite WHERE statut = 'Valide'")[0]['count'],
+            'expirant_30j': self.execute_query(
+                "SELECT COUNT(*) as count FROM attestations_conformite WHERE date_expiration BETWEEN DATE('now') AND DATE('now', '+30 days')"
+            )[0]['count']
+        }
+        
+        # Sous-traitants
+        stats['sous_traitants'] = {
+            'total': self.execute_query("SELECT COUNT(*) as count FROM sous_traitants")[0]['count'],
+            'actifs': self.execute_query("SELECT COUNT(*) as count FROM sous_traitants WHERE est_actif = 1")[0]['count'],
+            'conformes': self.execute_query(
+                "SELECT COUNT(*) as count FROM sous_traitants WHERE attestation_revenu_quebec = 1 AND attestation_ccq = 1 AND attestation_cnesst = 1"
+            )[0]['count']
+        }
+        
+        return stats
+    except Exception as e:
+        logger.error(f"Erreur statistiques conformité: {e}")
+        return {}
+    return pieds * 0.3048  # 1 pied = 0.3048 mètres
